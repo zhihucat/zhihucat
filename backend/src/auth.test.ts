@@ -1,16 +1,21 @@
-const assert = require('node:assert/strict');
-const { createHash, randomUUID } = require('node:crypto');
-const test = require('node:test');
-const { bearerToken, identityUsername, isUsernameAvailable, loadProfile, saveProfile, serviceRequest, verifySupabaseToken } = require('./auth');
-const { createServer } = require('./server');
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import test from 'node:test';
+import type { TestContext } from 'node:test';
+import { bearerToken, identityUsername, isUsernameAvailable, loadProfile, saveProfile, serviceRequest, verifySupabaseToken } from './auth.ts';
+import type { FetchJson } from './auth.ts';
+import { createServer } from './server.ts';
+import type { ServerOptions } from './server.ts';
+import { isHttpError, requestBody, serverUrl } from './test-helpers.ts';
+import type { JsonObject } from './types.ts';
 
 const user = { id: '00000000-0000-4000-8000-000000000001', email: 'u-63-61-74@argus.local', user_metadata: { username: 'Cat' } };
 const session = { profileId: user.id, user: { ...user, username: 'Cat' } };
 const avatar = '/assets/lawyer-cat-transparent.png';
-const token = (overrides = {}) => ['e30', Buffer.from(JSON.stringify({ sub: user.id, role: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600, ...overrides })).toString('base64url'), 'test-signature'].join('.');
-const response = (body, status = 200) => new Response(JSON.stringify(body), { status });
+const token = (overrides: JsonObject = {}) => ['e30', Buffer.from(JSON.stringify({ sub: user.id, role: 'authenticated', exp: Math.floor(Date.now() / 1000) + 3600, ...overrides })).toString('base64url'), 'test-signature'].join('.');
+const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 
-function configure(t) {
+function configure(t: TestContext) {
   const values = { SUPABASE_URL: `https://${randomUUID()}.example.invalid`, SUPABASE_ANON_KEY: 'test-public-key', SUPABASE_PUBLISHABLE_KEY: '', SUPABASE_SERVICE_ROLE_KEY: 'test-server-only-key' };
   for (const [key, value] of Object.entries(values)) {
     const previous = process.env[key];
@@ -22,7 +27,7 @@ function configure(t) {
 test('missing, malformed, expired and service-role credentials fail before any upstream call', async (t) => {
   configure(t);
   const upstream = () => assert.fail('must not contact Supabase');
-  for (const value of ['', 'abc', 'x.null.y', token({ exp: 1 }), token({ sub: 'other' }), token({ role: 'service_role' })]) {
+  for (const value of ['', 'abc', 'x.null.y', token({ exp: 1 }), token({ exp: '9999999999' }), token({ sub: 'other' }), token({ sub: [user.id] }), token({ role: 'service_role' })]) {
     await assert.rejects(verifySupabaseToken(value, upstream), { statusCode: 401 });
   }
   assert.equal(bearerToken({ headers: {} }), '');
@@ -34,11 +39,11 @@ test('only remote-verified subjects are trusted; verification never sends servic
   configure(t);
   let calls = 0;
   const signed = token();
-  const fetchImpl = async (url, init) => {
+  const fetchImpl: FetchJson = async (url, init) => {
     calls++;
     assert.equal(url, process.env.SUPABASE_URL + '/auth/v1/user');
-    assert.equal(init.headers.apikey, 'test-public-key');
-    assert.equal(init.headers.Authorization, 'Bearer ' + signed);
+    assert.equal(new Headers(init.headers).get('apikey'), 'test-public-key');
+    assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer ' + signed);
     assert.equal(init.redirect, 'error');
     assert.ok(init.signal instanceof AbortSignal);
     return response(user);
@@ -62,6 +67,14 @@ test('cached acceptance never crosses JWT expiration, and a token expiring in fl
   await assert.rejects(verifySupabaseToken(pending, async () => { now += 3000; return response(user); }), { statusCode: 401 });
 });
 
+test('malformed upstream identities are rejected before entering the typed session cache', async (t) => {
+  configure(t);
+  for (const [nonce, body] of [null, [], {}, { ...user, id: [user.id] }, { ...user, email: null }].entries()) {
+    await assert.rejects(verifySupabaseToken(token({ nonce }), async () => response(body)), { statusCode: 401 });
+  }
+  assert.equal(identityUsername({ ...user, user_metadata: null }), 'cat');
+});
+
 test('concurrent checks deduplicate; transient upstream errors do not poison the cache', async (t) => {
   configure(t);
   let calls = 0;
@@ -71,7 +84,7 @@ test('concurrent checks deduplicate; transient upstream errors do not poison the
   assert.equal(calls, 1);
   const other = token({ nonce: 'retry' });
   for (const failure of [async () => response({}, 500), async () => { throw new Error('network secret'); }, async () => new Response('not json')]) {
-    await assert.rejects(verifySupabaseToken(other, failure), (error) => error.statusCode === 503 && !error.message.includes('secret'));
+    await assert.rejects(verifySupabaseToken(other, failure), (error: unknown) => isHttpError(error) && error.statusCode === 503 && !error.message.includes('secret'));
   }
   assert.equal((await verifySupabaseToken(other, fetchImpl)).id, user.id);
 });
@@ -109,16 +122,18 @@ test('long Unicode names bind their hash identity without exceeding email local-
 
 test('profile initialization and avatar writes only use verified identity; scores are never rewritten', async (t) => {
   configure(t);
-  const calls = [];
-  const upstream = async (url, init) => {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const upstream: FetchJson = async (url, init) => {
     calls.push({ url, init });
-    return response(init.method === 'POST' ? { id: user.id, name: 'Cat', total_score: 0 } : []);
+    return response(init.method === 'POST' ? { id: user.id, name: 'Cat', avatar, total_score: 0, completed_levels: 0 } : []);
   };
   const profile = await loadProfile(session, upstream);
   assert.equal(profile.total_score, 0);
   assert.equal(calls.length, 2);
   await saveProfile(session, { id: randomUUID(), name: 'Victim', avatar, totalScore: 999999, completedLevels: 99 }, upstream);
-  const body = JSON.parse(calls.at(-1).init.body);
+  const lastCall = calls.at(-1);
+  assert.ok(lastCall);
+  const body = requestBody(lastCall.init);
   assert.deepEqual(body, { p_player_id: user.id, p_name: 'Cat', p_avatar: avatar });
   for (const invalid of ['//evil.example/avatar.png', '/anything.svg', 'data:image/png,x', null, {}]) {
     await assert.rejects(saveProfile(session, { avatar: invalid }, upstream), { statusCode: 400 });
@@ -127,34 +142,51 @@ test('profile initialization and avatar writes only use verified identity; score
 
 test('single-row PostgREST arrays initialize a profile and invalid RPC rows fail closed', async (t) => {
   configure(t);
-  const row = { id: user.id, name: 'Cat', avatar, total_score: 0 };
+  const row = { id: user.id, name: 'Cat', avatar, total_score: 0, completed_levels: 0 };
   assert.deepEqual(await loadProfile(session, async (_url, init) => response(init.method === 'POST' ? [row] : [])), row);
   await assert.rejects(saveProfile(session, {}, async () => response([])), { statusCode: 503 });
   await assert.rejects(saveProfile(session, {}, async () => response({ ...row, id: randomUUID() })), { statusCode: 503 });
+});
+
+test('profile responses validate required fields and preserve additional database columns', async (t) => {
+  configure(t);
+  const row = { id: user.id, name: 'Cat', avatar, total_score: 88, completed_levels: 1, created_at: '2026-09-15T00:00:00Z' };
+  assert.deepEqual(await loadProfile(session, async () => response([row])), row);
+  for (const invalid of [null, {}, { ...row, name: null }, { ...row, avatar: 1 }, { ...row, total_score: '88' }, { ...row, completed_levels: undefined }]) {
+    await assert.rejects(saveProfile(session, {}, async () => response(invalid)), { statusCode: 503 });
+  }
+  await assert.rejects(loadProfile(session, async () => response(row)), { statusCode: 503 });
 });
 
 test('username availability uses exact RPC values, including underscores, and rejects invalid input', async (t) => {
   configure(t);
   const available = await isUsernameAvailable(' A_B ', async (url, init) => {
     assert.match(url, /\/rpc\/is_username_available$/);
-    assert.deepEqual(JSON.parse(init.body), { p_name: 'A_B', p_email: 'u-61-5f-62@argus.local' });
+    assert.deepEqual(requestBody(init), { p_name: 'A_B', p_email: 'u-61-5f-62@argus.local' });
     return response(true);
   });
   assert.equal(available, true);
   assert.equal(await isUsernameAvailable('%', () => assert.fail('invalid name')), false);
 });
 
+test('username availability rejects non-boolean upstream payloads', async (t) => {
+  configure(t);
+  for (const body of [null, 'true', 1, [], {}]) {
+    await assert.rejects(isUsernameAvailable('Cat', async () => response(body)), { statusCode: 503 });
+  }
+});
+
 test('database errors and credentials are not returned to clients', async (t) => {
   configure(t);
-  await assert.rejects(serviceRequest('/rest/v1/player_profiles', {}, async () => response({ message: 'SQL detail test-server-only-key' }, 500)), (error) => error.statusCode === 503 && !/SQL|key/.test(error.message));
+  await assert.rejects(serviceRequest('/rest/v1/player_profiles', {}, async () => response({ message: 'SQL detail test-server-only-key' }, 500)), (error: unknown) => isHttpError(error) && error.statusCode === 503 && !/SQL|key/.test(error.message));
   await assert.rejects(serviceRequest('/rest/v1/player_profiles', {}, async () => response({ code: '23505', message: 'private row' }, 409)), { statusCode: 409 });
 });
 
-async function serve(t, options = {}) {
+async function serve(t: TestContext, options: ServerOptions = {}) {
   const server = createServer(options);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  return `http://127.0.0.1:${server.address().port}`;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close((error) => error ? reject(error) : resolve()); }));
+  return serverUrl(server);
 }
 
 test('bad origins are contained by the handler and preflight requires an allowed origin', async (t) => {
@@ -203,11 +235,11 @@ test('HTTP profile and settlement boundary ignores forged IDs, usernames and sco
   configure(t);
   const base = await serve(t);
   const nativeFetch = global.fetch;
-  const serviceBodies = [];
-  t.mock.method(global, 'fetch', async (url, init = {}) => {
-    if (!String(url).startsWith(process.env.SUPABASE_URL)) return nativeFetch(url, init);
+  const serviceBodies: unknown[] = [];
+  t.mock.method(global, 'fetch', async (url: Parameters<typeof fetch>[0], init: RequestInit = {}) => {
+    if (!String(url).startsWith(process.env.SUPABASE_URL!)) return nativeFetch(url, init);
     if (String(url).endsWith('/auth/v1/user')) return response(user);
-    if (init.body) serviceBodies.push(JSON.parse(init.body));
+    if (init.body) serviceBodies.push(requestBody(init));
     return response({ id: user.id, name: 'Cat', avatar, total_score: 88, completed_levels: 1 });
   });
   const result = await fetch(base + '/api/profile', { method: 'PUT', headers: { Authorization: 'Bearer ' + token() }, body: JSON.stringify({ id: randomUUID(), name: 'Victim', avatar, total_score: 999999 }) });

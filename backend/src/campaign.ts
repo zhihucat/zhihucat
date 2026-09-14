@@ -1,7 +1,9 @@
-const { createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } = require('node:crypto');
-const { campaignCases } = require('./campaign-cases');
-const { actionSeed, battleReducer, emptyBattle, evidenceStats, HAND_SIZE, opponentHealth } = require('./court-battle.mts');
-const { httpError } = require('./auth');
+import { createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
+import { campaignCases } from './campaign-cases.ts';
+import { actionSeed, battleReducer, emptyBattle, evidenceStats, HAND_SIZE, opponentHealth } from './court-battle.mts';
+import { httpError } from './auth.ts';
+import { isRecord, isStringArray } from './types.ts';
+import type { BattleStart, BattleTicket, CampaignCase, JsonObject, PublicCampaignCase } from './types.ts';
 
 // A dedicated key permits stateless tickets across replicas. In local/demo mode
 // a restart intentionally invalidates outstanding games, never existing scores.
@@ -9,35 +11,38 @@ const battleSigningKey = process.env.CAMPAIGN_SIGNING_KEY || randomBytes(32);
 if (typeof battleSigningKey === 'string' && battleSigningKey.length < 32) throw new Error('CAMPAIGN_SIGNING_KEY must be at least 32 characters');
 const BATTLE_TTL_MS = 30 * 60_000;
 
-function signBattle(payload) {
+function signBattle(payload: string) {
   return createHmac('sha256', battleSigningKey).update(payload).digest();
 }
 
-function createBattle(input, profileId = null, now = Date.now()) {
+export function createBattle(input: JsonObject, profileId: string | null = null, now = Date.now()): BattleStart {
   const caseData = resolveCase(input.caseId);
   const ids = input.evidenceIds;
-  if (!Array.isArray(ids) || ids.length < 1 || ids.length > HAND_SIZE || new Set(ids).size !== ids.length || ids.some((id) => !caseData.evidence.some((item) => item.id === id))) {
+  if (!isStringArray(ids) || ids.length < 1 || ids.length > HAND_SIZE || new Set(ids).size !== ids.length || ids.some((id) => !caseData.evidence.some((item) => item.id === id))) {
     throw httpError(400, '请选择 1 到 4 张本关证据卡');
   }
   const seed = randomInt(0x100000000);
-  const payload = Buffer.from(JSON.stringify({ v: 1, profileId, caseId: caseData.id, evidenceIds: ids, seed, expiresAt: now + BATTLE_TTL_MS })).toString('base64url');
+  const ticket: BattleTicket = { v: 1, profileId, caseId: caseData.id, evidenceIds: ids, seed, expiresAt: now + BATTLE_TTL_MS };
+  const payload = Buffer.from(JSON.stringify(ticket)).toString('base64url');
   return { ticket: `${payload}.${signBattle(payload).toString('base64url')}`, seed };
 }
 
-function replayBattle(input, profileId, now = Date.now()) {
+export function replayBattle(input: JsonObject, profileId?: string | null, now = Date.now()) {
   if (typeof input.ticket !== 'string' || input.ticket.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(input.ticket)) throw httpError(400, '缺少有效的开局凭证，请重新开始本关');
   const [payload, signature] = input.ticket.split('.');
   const expected = signBattle(payload);
   const supplied = Buffer.from(signature, 'base64url');
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(400, '开局凭证无效');
-  const game = JSON.parse(Buffer.from(payload, 'base64url').toString());
+  // Only this server's signed payload reaches the internal ticket type.
+  const game = JSON.parse(Buffer.from(payload, 'base64url').toString()) as BattleTicket;
   if (game.v !== 1 || game.expiresAt <= now) throw httpError(409, '本局已过期，请重新开始本关');
   if (profileId !== undefined && game.profileId !== profileId) throw httpError(403, '只能结算当前账号登录后开始的对局');
-  const actions = input.actions;
-  if (!Array.isArray(actions) || !actions.length || actions.length > 200) throw httpError(400, '出牌记录无效');
+  if (!Array.isArray(input.actions) || !input.actions.length || input.actions.length > 200) throw httpError(400, '出牌记录无效');
+  const actions: unknown[] = input.actions;
   const caseData = resolveCase(game.caseId);
   const deck = game.evidenceIds.map((id) => {
     const item = caseData.evidence.find((evidence) => evidence.id === id);
+    if (!item) throw httpError(409, '本关证据已更新，请重新开始本关');
     const key = caseData.keyEvidenceIds.includes(id);
     return { id: `card-${id}`, evidenceId: id, name: item.title, nature: '', key, credibility: item.credibility, text: '', effectText: '', staminaRecovery: 0, shieldGain: 0, ...evidenceStats(item, key, caseData.levelId) };
   });
@@ -57,54 +62,48 @@ function replayBattle(input, profileId, now = Date.now()) {
   return buildVerdict({ caseId: game.caseId, evidenceIds: game.evidenceIds, gameResult: state.result });
 }
 
-const demoCase = campaignCases[0];
+export const demoCase = campaignCases[0];
 
-function resolveCase(identifier) {
+function resolveCase(identifier: unknown): CampaignCase {
   // Omitted IDs keep the original demo API compatible. Explicit unknown IDs never fall back.
   if (identifier === undefined || identifier === null) return demoCase;
   const selected = campaignCases.find((item) => item.id === identifier || String(item.levelId) === String(identifier));
   if (!selected) {
-    const error = new Error('关卡不存在，请从关卡地图重新选择');
-    error.statusCode = 404;
-    throw error;
+    throw httpError(404, '关卡不存在，请从关卡地图重新选择');
   }
   return selected;
 }
 
-function getCampaignLevels() {
+export function getCampaignLevels() {
   return campaignCases.map(({ id, levelId, levelTitle, desc, difficulty, goal, keyEvidenceIds }) => ({
     id, levelId, title: levelTitle, desc, difficulty, goal, keyEvidenceCount: keyEvidenceIds.length,
   }));
 }
 
-function getCampaignCase(identifier) {
+export function getCampaignCase(identifier?: unknown): PublicCampaignCase {
   const { judgment, adversary, keywords, ...caseData } = resolveCase(identifier);
   return structuredClone(caseData);
 }
 
-function selectEvidence(caseData, input) {
-  const ids = new Set(Array.isArray(input.evidenceIds) ? input.evidenceIds : []);
+function selectEvidence(caseData: CampaignCase, input: JsonObject) {
+  const ids = new Set<unknown>(Array.isArray(input.evidenceIds) ? input.evidenceIds : []);
   // Unknown IDs, duplicates and evidence from other levels cannot earn points or complete a chain.
   return caseData.evidence.filter((item) => ids.has(item.id));
 }
 
-function respondToDebate(input) {
+export function respondToDebate(input: JsonObject) {
   const caseData = resolveCase(input.caseId ?? input.levelId);
   const argument = String(input.argument || '').trim();
   if (!argument) {
-    const error = new Error('argument 不能为空');
-    error.statusCode = 400;
-    throw error;
+    throw httpError(400, 'argument 不能为空');
   }
   if (argument.length > 2000) {
-    const error = new Error('argument 不能超过 2000 个字符');
-    error.statusCode = 400;
-    throw error;
+    throw httpError(400, 'argument 不能超过 2000 个字符');
   }
   const evidence = selectEvidence(caseData, input);
   const evidenceIds = evidence.map((item) => item.id);
   const missing = caseData.keyEvidenceIds.filter((id) => !evidenceIds.includes(id));
-  const history = Array.isArray(input.history) ? input.history.slice(-20).filter((turn) => turn && (!turn.caseId || turn.caseId === caseData.id)) : [];
+  const history = Array.isArray(input.history) ? input.history.slice(-20).filter((turn: unknown) => isRecord(turn) && (!turn.caseId || turn.caseId === caseData.id)) : [];
   const matches = caseData.keywords.map((words) => words.filter((word) => argument.includes(word)).length);
   const coverage = matches.filter(Boolean).length;
   const topic = Math.max(...matches) > 0 ? matches.indexOf(Math.max(...matches)) : history.length % caseData.focus.length;
@@ -130,17 +129,15 @@ function respondToDebate(input) {
   };
 }
 
-function resolveGameResult(input) {
+function resolveGameResult(input: JsonObject) {
   const gameResult = input.gameResult ?? input.result ?? input.outcome;
   if (gameResult !== 'player_win' && gameResult !== 'opponent_win') {
-    const error = new Error('gameResult 必须是 player_win 或 opponent_win');
-    error.statusCode = 400;
-    throw error;
+    throw httpError(400, 'gameResult 必须是 player_win 或 opponent_win');
   }
   return gameResult;
 }
 
-function buildVerdict(input) {
+export function buildVerdict(input: JsonObject) {
   const caseData = resolveCase(input.caseId ?? input.levelId);
   const gameResult = resolveGameResult(input);
   const evidence = selectEvidence(caseData, input);
@@ -159,5 +156,3 @@ function buildVerdict(input) {
     disclaimer: '虚构案件的规则化训练反馈，不是真实法院或仲裁机构裁决，不构成法律意见。',
   };
 }
-
-module.exports = { createBattle, replayBattle, getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict };

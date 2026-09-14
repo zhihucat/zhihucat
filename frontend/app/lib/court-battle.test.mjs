@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
+import { campaignCases } from '../../../backend/src/campaign-cases.ts';
 import test from 'node:test';
 import { battleReducer, canAffordCard, emptyBattle, HAND_SIZE, PLAYER_MAX_SHIELD, PLAYER_MAX_STAMINA, TURN_SECONDS } from './court-battle.ts';
 
@@ -203,8 +203,6 @@ test('100 seeds × 40 plays: always four cards, affordable option, recyclable di
 });
 
 test('all twenty campaign cases keep each collected deck scoped and playable past four uses', () => {
-  const require = createRequire(import.meta.url);
-  const { campaignCases } = require('../../../backend/src/campaign-cases.js');
   for (const campaign of campaignCases) {
     const deck = campaign.evidence.map((item, i) => ({ ...exhibit(i, 3, 5), evidenceId: item.id }));
     let state = { ...start(deck, campaign.levelId), playerHp: 1000 };

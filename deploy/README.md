@@ -6,7 +6,7 @@ ARGUS+ 可以与同一台服务器上的其他 tomeet.chat 服务并行运行。
 
 ## 服务器准备
 
-- Node.js 22.18+ 或 Docker（共用战斗规则使用 Node 原生类型擦除）
+- Node.js 22.18+ 或 Docker（后端全部为 TypeScript，生产运行编译后的 ESM）
 - DNS：将 `argus-api.tomeet.chat`（推荐）或 `api.tomeet.chat` 的 A/AAAA 记录指向服务器公网地址
 - 防火墙只开放 80/443；ARGUS+ 只监听本机 `4100`（Docker 容器内部仍使用 `4000`）
 
@@ -27,11 +27,12 @@ curl http://127.0.0.1:4100/health
 
 ```bash
 cd /opt/argus
-npm ci --omit=dev
+npm ci --workspace backend --include-workspace-root=false --include=dev
+npm run build:backend
 PORT=4100 HOST=127.0.0.1 CORS_ORIGIN=https://argus.example.com npm run start:backend
 ```
 
-生产环境可用 systemd/PM2 守护 `npm run start:backend`，并将 `HOST=127.0.0.1`，避免直接暴露 Node 端口。
+构建阶段需要 TypeScript 和 Node 类型开发依赖；运行阶段不需要编译器或第三方包。每次更新源码后应先重新运行 `npm run build:backend`，再重启服务。生产环境可用 systemd/PM2 守护 `npm run start:backend`（实际入口 `backend/dist/server.js`），并将 `HOST=127.0.0.1`，避免直接暴露 Node 端口。Docker 使用多阶段构建，最终镜像只包含后端包信息与编译产物。
 
 ## 方案 A：独立子域名（推荐）
 
@@ -103,4 +104,4 @@ sudo systemctl enable --now argus-api
 sudo systemctl status argus-api
 ```
 
-Zeabur 从仓库根目录 `/backend` 构建时使用 [`backend/Zeabur.Dockerfile`](../backend/Zeabur.Dockerfile)。该 Dockerfile 不依赖 monorepo 根目录，适合直接作为 Zeabur 服务的 Dockerfile。
+Zeabur 使用 [`backend/Zeabur.Dockerfile`](../backend/Zeabur.Dockerfile)，**构建上下文须为仓库根目录**（例如 `docker build -f backend/Zeabur.Dockerfile .`）。与 Docker Compose 一样，构建阶段利用根目录 `package-lock.json` 安装后端开发依赖并编译，运行阶段不包含前端或开发依赖。

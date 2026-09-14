@@ -1,11 +1,9 @@
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import test from 'node:test';
 import { artworkFor, artworkForEvidence } from './evidence-art.ts';
 
-const require = createRequire(import.meta.url);
-const { campaignCases } = require('../../../backend/src/campaign-cases.js');
+import { campaignCases } from '../../../backend/src/campaign-cases.ts';
 
 test('rental cards retain the wall, furniture, key, chat and document collection artwork', () => {
   const demo = campaignCases[0];

@@ -1,17 +1,20 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const { buildVerdict, createServer } = require('./server');
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { auditContract, buildCaseDraft, buildVerdict, createServer } from './server.ts';
+import { getCampaignLevels, respondToDebate } from './campaign.ts';
+import { responseJson, serverUrl } from './test-helpers.ts';
+import type { ApiData, ApiError } from './test-helpers.ts';
+import type { BattleStart, PublicCampaignCase } from './types.ts';
 
-async function withServer(run) {
+async function withServer(run: (baseUrl: string) => Promise<void>) {
   const server = createServer({ corsOrigin: '*' });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = serverUrl(server);
 
   try {
     await run(baseUrl);
   } finally {
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
@@ -20,7 +23,7 @@ async function withServer(run) {
 test('GET /health returns the standalone Node.js service status', async () => {
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/health`);
-    const body = await response.json();
+    const body = await responseJson<{ status: string; service: string; runtime: string }>(response);
 
     assert.equal(response.status, 200);
     assert.equal(body.status, 'ok');
@@ -40,7 +43,7 @@ test('POST /api/cases/draft creates a case draft', async () => {
         defendant: '房东李某',
       }),
     });
-    const body = await response.json();
+    const body = await responseJson<ApiData<ReturnType<typeof buildCaseDraft>>>(response);
 
     assert.equal(response.status, 201);
     assert.equal(body.data.caseType, '房屋租赁合同纠纷');
@@ -58,7 +61,7 @@ test('POST /api/contracts/audit returns rule-based findings', async () => {
         text: '乙方应尽快完成交付。如乙方违约，甲方有权没收全部保证金。',
       }),
     });
-    const body = await response.json();
+    const body = await responseJson<ApiData<ReturnType<typeof auditContract>>>(response);
 
     assert.equal(response.status, 200);
     assert.equal(body.data.summary.position, '乙方');
@@ -80,7 +83,7 @@ test('invalid JSON returns a 400 response', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: '{bad json',
     });
-    const body = await response.json();
+    const body = await responseJson<ApiError>(response);
 
     assert.equal(response.status, 400);
     assert.equal(body.error.message, '请求体必须是有效 JSON 对象');
@@ -89,9 +92,8 @@ test('invalid JSON returns a 400 response', async () => {
 
 test('comma-separated CORS origins support Vercel production and preview hosts', async () => {
   const server = createServer({ corsOrigin: 'https://argus.vercel.app,https://preview.argus.vercel.app' });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  const baseUrl = `http://127.0.0.1:${address.port}`;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = serverUrl(server);
 
   try {
     const response = await fetch(`${baseUrl}/health`, {
@@ -99,7 +101,7 @@ test('comma-separated CORS origins support Vercel production and preview hosts',
     });
     assert.equal(response.headers.get('access-control-allow-origin'), 'https://preview.argus.vercel.app');
   } finally {
-    await new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
@@ -108,7 +110,7 @@ test('comma-separated CORS origins support Vercel production and preview hosts',
 test('GET /api/campaign/demo exposes complete rental evidence sources', async () => {
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/campaign/demo`);
-    const body = await response.json();
+    const body = await responseJson<ApiData<PublicCampaignCase>>(response);
 
     assert.equal(response.status, 200);
     assert.equal(body.data.id, 'rental-deposit-001');
@@ -129,7 +131,7 @@ test('POST /api/campaign/respond changes response based on evidence actually sub
         history: [],
       }),
     });
-    const body = await response.json();
+    const body = await responseJson<ApiData<ReturnType<typeof respondToDebate>>>(response);
 
     assert.equal(response.status, 200);
     assert.match(body.data.response, /入住照片/);
@@ -145,7 +147,7 @@ test('POST /api/campaign/verdict rejects client-asserted wins without a signed r
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ evidenceIds: ['ev-movein-photo', 'ev-chat', 'ev-contract', 'ev-repair'], gameResult: 'player_win' }),
     });
-    const body = await response.json();
+    const body = await responseJson<ApiError>(response);
 
     assert.equal(response.status, 400);
     assert.ok(body.error.message);
@@ -156,24 +158,30 @@ const historicalLevelTitles = ['押金猎人', '七天无理由', '加班费幽�
 const eazoLevelTitles = ['租赁押金争议', '网购退货之争', '离职工资之争', '购房尾款之争', '转账之争', '装修停工之争', '二手车之争', '验收之争', '理赔之争', '酒局之后'];
 const rentalCaseLeakPattern = /eazo-rental-deposit-001|租赁押金争议|墙面划痕是谁造成|租客张某|房东李某/;
 
-async function postCampaign(baseUrl, route, data) {
+type CampaignResponses = {
+  respond: ReturnType<typeof respondToDebate>;
+  battles: BattleStart;
+  verdict: ReturnType<typeof buildVerdict>;
+};
+
+async function postCampaign<Route extends keyof CampaignResponses>(baseUrl: string, route: Route, data: unknown) {
   const response = await fetch(`${baseUrl}/api/campaign/${route}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
   });
-  return { response, body: await response.json() };
+  return { response, body: await responseJson<ApiData<CampaignResponses[Route]>>(response) };
 }
 
 test('all twenty native and EAZO levels have distinct, complete and reachable cases', async () => {
   await withServer(async (baseUrl) => {
-    const { data: levels } = await (await fetch(`${baseUrl}/api/campaign/levels`)).json();
+    const { data: levels } = await responseJson<ApiData<ReturnType<typeof getCampaignLevels>>>(await fetch(`${baseUrl}/api/campaign/levels`));
     assert.deepEqual(levels.slice(0, 10).map((level) => level.title), historicalLevelTitles);
     assert.deepEqual(levels.slice(10).map((level) => level.title), eazoLevelTitles);
     assert.deepEqual(levels.map((level) => level.difficulty), [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 1, 2, 3, 4, 5, 5, 6, 7, 8, 8]);
     assert.equal(new Set(levels.map((level) => level.id)).size, 20);
-    const allEvidenceIds = new Set();
+    const allEvidenceIds = new Set<string>();
     for (const level of levels) {
       const response = await fetch(`${baseUrl}/api/campaign/cases/${level.id}`);
-      const { data: caseData } = await response.json();
+      const { data: caseData } = await responseJson<ApiData<PublicCampaignCase & { judgment?: unknown }>>(response);
       assert.equal(response.status, 200);
       assert.equal(caseData.id, level.id);
       assert.equal(caseData.levelId, level.levelId);
@@ -196,12 +204,13 @@ test('all twenty native and EAZO levels have distinct, complete and reachable ca
         assert.ok(sceneEvidence.has(evidence.id));
         assert.ok(documentEvidence.has(evidence.id));
         const source = documents.get(evidence.sourceDocumentId);
-        assert.ok(source?.content.includes('虚构训练材料'));
+        assert.ok(source);
+        assert.ok(source.content.includes('虚构训练材料'));
         assert.ok(source.hotspots.some((spot) => spot.evidenceId === evidence.id));
         assert.ok(evidence.sourceRange && evidence.proofPurpose);
       }
       assert.ok([...sceneEvidence, ...documentEvidence, ...caseData.keyEvidenceIds].every((id) => caseData.evidence.some((evidence) => evidence.id === id)));
-      const { data: numberedCase } = await (await fetch(`${baseUrl}/api/campaign/cases/${level.levelId}`)).json();
+      const { data: numberedCase } = await responseJson<ApiData<PublicCampaignCase>>(await fetch(`${baseUrl}/api/campaign/cases/${level.levelId}`));
       assert.equal(numberedCase.id, caseData.id);
       if (level.levelId > 1 && level.levelId !== 11) assert.doesNotMatch(JSON.stringify(caseData), rentalCaseLeakPattern);
     }
@@ -211,7 +220,7 @@ test('all twenty native and EAZO levels have distinct, complete and reachable ca
 test('all twenty debate APIs and internal verdict templates stay scoped to their case', async () => {
   await withServer(async (baseUrl) => {
     for (let levelId = 1; levelId <= 20; levelId += 1) {
-      const { data: caseData } = await (await fetch(`${baseUrl}/api/campaign/cases/${levelId}`)).json();
+      const { data: caseData } = await responseJson<ApiData<PublicCampaignCase>>(await fetch(`${baseUrl}/api/campaign/cases/${levelId}`));
       const payload = { caseId: caseData.id, evidenceIds: caseData.keyEvidenceIds, gameResult: 'player_win' };
       for (const card of caseData.cards) {
         const { response, body } = await postCampaign(baseUrl, 'respond', { ...payload, argument: card.text });
@@ -250,7 +259,7 @@ test('unknown levels fail explicitly instead of silently loading the rental demo
   await withServer(async (baseUrl) => {
     for (const identifier of ['0', '21', 'unknown-case', 'toString']) {
       assert.equal((await fetch(`${baseUrl}/api/campaign/cases/${identifier}`)).status, 404);
-      for (const route of ['respond', 'battles']) {
+      for (const route of ['respond', 'battles'] as const) {
         const { response } = await postCampaign(baseUrl, route, { caseId: identifier, argument: '本案证据', evidenceIds: ['ev-contract'] });
         assert.equal(response.status, 404);
       }
@@ -261,7 +270,7 @@ test('unknown levels fail explicitly instead of silently loading the rental demo
 
 test('foreign, fabricated and duplicate evidence cannot complete or inflate another case', async () => {
   await withServer(async (baseUrl) => {
-    const { data: caseData } = await (await fetch(`${baseUrl}/api/campaign/cases/2`)).json();
+    const { data: caseData } = await responseJson<ApiData<PublicCampaignCase>>(await fetch(`${baseUrl}/api/campaign/cases/2`));
     const foreignIds = ['ev-movein-photo', 'ev-chat', 'ev-contract', 'ev-repair', 'made-up'];
     const input = { caseId: caseData.id, argument: caseData.cards[0].text, evidenceIds: foreignIds, gameResult: 'opponent_win' };
     const { body: debate } = await postCampaign(baseUrl, 'respond', input);
@@ -281,7 +290,7 @@ test('foreign, fabricated and duplicate evidence cannot complete or inflate anot
 
 test('internal verdict formatting follows the validated battle outcome, not evidence completeness', async () => {
   await withServer(async (baseUrl) => {
-    const { data: caseData } = await (await fetch(`${baseUrl}/api/campaign/cases/1`)).json();
+    const { data: caseData } = await responseJson<ApiData<PublicCampaignCase>>(await fetch(`${baseUrl}/api/campaign/cases/1`));
     const completeEvidence = caseData.keyEvidenceIds;
     const missingEvidence = completeEvidence.slice(0, 1);
 
@@ -306,7 +315,7 @@ test('POST /api/community/posts requires explicit share content', async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: '缺少正文' }),
     });
-    const body = await response.json();
+    const body = await responseJson<ApiError>(response);
 
     assert.equal(response.status, 400);
     assert.match(body.error.message, /title 和 body/);

@@ -3,13 +3,13 @@
 ARGUS+ 是一个法律训练产品原型，当前采用前后端分离的工作区结构：
 
 - `frontend/`：Next.js App Router + React + TypeScript，默认运行在 `3000` 端口。
-- `backend/`：独立 Node.js HTTP API，默认运行在 `4000` 端口。
+- `backend/`：TypeScript + ESM 独立 Node.js HTTP API，默认运行在 `4000` 端口。
 - `frontend/app/`：唯一的 Next.js App Router 页面实现。
 - `supabase/schema.sql`：玩家档案、闯关记录和排行榜视图。
 
 ## 快速开始
 
-需要 Node.js **22.18+**（后端用原生类型擦除运行前后端共用的纯战斗规则，不增加编译器依赖）。
+需要 Node.js **22.18+**。后端源码、关卡数据和测试全部使用 TypeScript；开发与测试通过 Node 原生类型擦除运行，生产通过 `tsc` 编译后运行，无额外运行时依赖。前后端继续共用 `backend/src/court-battle.mts` 的纯战斗规则。
 
 ```bash
 npm ci
@@ -47,8 +47,8 @@ npm run dev
 
 ```bash
 npm test                   # 前后端单元与 HTTP 边界测试（Supabase Auth 使用测试替身）
-npm run typecheck
-npm run build
+npm run typecheck          # 前后端严格类型检查，后端测试也在检查范围内
+npm run build              # 后端编译至 backend/dist，再构建 Next.js 前端
 npm run test:database      # Docker 中独立 PostgreSQL 16：迁移、权限与并发写入
 ```
 
@@ -60,6 +60,15 @@ npm run test:database      # Docker 中独立 PostgreSQL 16：迁移、权限与
 npm run dev:backend
 npm run dev:frontend
 ```
+
+单独构建及启动生产后端：
+
+```bash
+npm run build:backend
+npm run start:backend      # 运行 backend/dist/server.js，并读取 backend/.env
+```
+
+`npm run dev:backend` 直接监听 TypeScript 源码，不需要预构建；类型检查仍需运行 `npm run typecheck`。`backend/dist/` 为生成目录，不提交到 Git；后端编译会将 `.ts` / `.mts` 导入分别改写为 `.js` / `.mjs`，不将测试打入生产产物。
 
 ## Vercel + 独立 Node.js 部署
 
@@ -114,7 +123,8 @@ curl -X POST http://localhost:4000/api/cases/draft \
 ```text
 frontend/app/       页面、布局和全局样式
 frontend/public/    前端静态资源
-backend/src/        Node.js API 与测试
+backend/src/        TypeScript API、数据模型、共用战斗规则与测试
+backend/dist/       后端生产构建产物（自动生成）
 legacy/             旧版静态页面快照
 .framework/         迁移验证与回滚工件
 ```

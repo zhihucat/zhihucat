@@ -1,18 +1,22 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
-const { createBattle, replayBattle, getCampaignCase } = require('./campaign');
-const { actionSeed, battleReducer, canAffordCard, emptyBattle, evidenceStats, opponentHealth } = require('./court-battle.mts');
-const { createServer } = require('./server');
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createBattle, replayBattle, getCampaignCase } from './campaign.ts';
+import { actionSeed, battleReducer, canAffordCard, emptyBattle, evidenceStats, opponentHealth } from './court-battle.mts';
+import { createServer } from './server.ts';
+import { responseJson, serverUrl } from './test-helpers.ts';
+import type { ApiData } from './test-helpers.ts';
+import type { BattleStart, PublicCampaignCase } from './types.ts';
 
-function playGame(caseData, game, evidenceIds) {
+function playGame(caseData: PublicCampaignCase, game: BattleStart, evidenceIds: string[]) {
   const enemyHp = opponentHealth(caseData);
   const deck = evidenceIds.map((id) => {
     const item = caseData.evidence.find((evidence) => evidence.id === id);
+    assert.ok(item);
     const key = caseData.keyEvidenceIds.includes(id);
-    return { id: `card-${id}`, evidenceId: id, key, staminaRecovery: 0, ...evidenceStats(item, key, caseData.levelId) };
+    return { id: `card-${id}`, evidenceId: id, name: item.title, nature: '', credibility: item.credibility, text: '', effectText: '', key, staminaRecovery: 0, ...evidenceStats(item, key, caseData.levelId) };
   });
   let state = battleReducer(emptyBattle(enemyHp), { type: 'start', deck, selectedIds: evidenceIds, enemyHp, seed: game.seed });
-  const actions = [];
+  const actions: string[] = [];
   while (!state.result && actions.length < 100) {
     const playable = state.hand.filter((card) => canAffordCard(card, state.stamina, state.playerShield));
     const card = playable.find((item) => item.value > 0) || playable.find((item) => item.staminaRecovery > 0) || playable[0];
@@ -85,17 +89,17 @@ test('invalid evidence, illegal plays, missing actions and fabricated wins are r
 
 test('public start and verdict HTTP routes accept a real replay, never a claimed outcome alone', async (t) => {
   const server = createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const post = async (route, body) => fetch(base + '/api/campaign/' + route, { method: 'POST', body: JSON.stringify(body) });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close((error) => error ? reject(error) : resolve()); }));
+  const base = serverUrl(server);
+  const post = async (route: string, body: unknown) => fetch(base + '/api/campaign/' + route, { method: 'POST', body: JSON.stringify(body) });
   const caseData = getCampaignCase(1);
   const start = await post('battles', { caseId: caseData.id, evidenceIds: caseData.keyEvidenceIds });
   assert.equal(start.status, 201);
-  const { data: game } = await start.json();
+  const { data: game } = await responseJson<ApiData<BattleStart>>(start);
   const { proof } = playGame(caseData, game, caseData.keyEvidenceIds);
   const result = await post('verdict', proof);
   assert.equal(result.status, 200);
-  assert.equal((await result.json()).data.gameResult, 'player_win');
+  assert.equal((await responseJson<ApiData<ReturnType<typeof replayBattle>>>(result)).data.gameResult, 'player_win');
   assert.equal((await post('verdict', { gameResult: 'player_win', evidenceIds: caseData.keyEvidenceIds })).status, 400);
 });
