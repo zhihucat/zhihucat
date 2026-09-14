@@ -9,14 +9,50 @@ ARGUS+ 是一个法律训练产品原型，当前采用前后端分离的工作�
 
 ## 快速开始
 
+需要 Node.js **22.18+**（后端用原生类型擦除运行前后端共用的纯战斗规则，不增加编译器依赖）。
+
 ```bash
-npm install
+npm ci
+# 仅首次配置；已有文件不覆盖，沿用同一个 Supabase 项目的凭据：
+cp -n backend/.env.example backend/.env
+cp -n frontend/.env.example frontend/.env.local
 npm run dev
 ```
 
-打开 <http://localhost:3000>。前端会通过 `NEXT_PUBLIC_API_BASE_URL` 访问 Node.js 服务；默认值为 `http://localhost:4000`。
+打开 <http://localhost:3000>。默认通过同源 `/argus-api` 代理访问后端 `http://localhost:4000`；也可设置 `NEXT_PUBLIC_API_BASE_URL` 直接访问独立后端。npm 后端脚本会读取 `backend/.env`，已有环境变量优先。
 
-配置 Supabase 后，首次进入法庭闯关会直接弹出注册窗口，只需设置用户名（即昵称）和密码；登录后可在玩家档案中选择预设头像。用户名会在 `player_profiles` 中做不区分大小写查重，玩家档案、胜局分数和排行榜会同步到项目 `tshojzkaojcehjunhbju`。未配置 anon key 时仍保留本机试玩模式。
+配置后，首次进入法庭闯关会直接弹出注册窗口，只需设置用户名（即昵称）和密码。Supabase Auth 负责账号认证；浏览器只持有 Supabase 的认证会话，玩家档案、胜局分数和排行榜由后端通过 service role 写入，前端不能直接修改分数。
+
+未配置前端 Supabase URL/key 时为本地练习模式，不创建云端账号；本地分数不会在登录后上传。首次登录由后端按 Auth 用户 ID 自动建立零分档案，昵称与认证身份绑定，档案编辑只允许更换预设头像。
+
+## Supabase Auth 配置与安全边界
+
+已有登录环境不需要重新申请项目或密钥。`frontend/.env.production` 中的 URL 和 publishable/anon key 可以沿用；`next dev` 不读取该文件，本地开发使用 `frontend/.env.local`。登录 Supabase 控制台也不会自动把配置写入应用。
+
+本次后端安全改造额外需要 `SUPABASE_SERVICE_ROLE_KEY`（用于后端档案读写和成绩结算）及 `CAMPAIGN_SIGNING_KEY`（本应用的对局签名密钥，不是 Supabase 凭据）。两者仅放在后端；前后端的公开项目地址和 key 应保持一致。已有后端密钥应沿用，不要随意轮换。环境文件已被 Git 忽略，不会自动同步到部署平台。
+
+1. 在 Supabase 开启 **Email provider**，关闭 **Confirm email**，将最短密码设为至少 **8 位**。前端校验不能替代 Auth 服务端策略；同时配置 Supabase 自带登录/注册频率限制。此实现没有验证码 UI，若开启 CAPTCHA，需要另行接入对应挑战令牌。
+2. 现有产品保留“用户名 + 密码”：用户名经 NFKC 规范化、忽略大小写，再映射到内部 `argus.local` 邮箱身份。较长 Unicode 名称使用 SHA-256，避免超过邮箱长度限制；兼容原型已有身份。**这些不是可收信邮箱，因此没有邮件确认或邮件找回密码能力**。不要为这种身份配置真实收信流程；已产生的未确认账号需要管理员单独处理，关闭确认开关不会自动确认它们。
+3. 后端配置 `SUPABASE_URL`、`SUPABASE_ANON_KEY`（也支持 `SUPABASE_PUBLISHABLE_KEY`）、`SUPABASE_SERVICE_ROLE_KEY`；前端仅配置 URL 和 publishable/anon key。项目必须一致，service role key 不得进入浏览器、源码或 `NEXT_PUBLIC_*`。
+4. 在同一发布窗口内执行 [`supabase/schema.sql`](supabase/schema.sql) 并切换新版前后端。**旧版浏览器仍直接写表时，不要单独提前迁移**：先确认备份和发布方案、暂停旧版写入，迁移后切换新版本并验证。迁移使用事务，可重复执行；撤销客户端对档案、成绩表及计分 RPC 的权限，排行榜视图明确只读。若旧表存在大小写重复昵称，唯一索引会使迁移回滚：先人工解决归属，不要直接删除玩家记录。迁移保留历史分数及重复胜局，不代表历史分数已通过新规则审计。
+5. 生产环境设置随机、稳定的 `CAMPAIGN_SIGNING_KEY`（至少 32 字符，可用 `openssl rand -hex 32` 生成），多副本必须一致。未配置时启动生成临时密钥，重启会使尚未结算的对局失效。
+
+后端使用 Supabase `/auth/v1/user` 验证 Bearer Token，用户 ID/昵称不采信请求体或任意 `user_metadata`。验证有 5 秒超时、并发请求合并及最多 1024 项缓存，缓存最长 60 秒且不越过 JWT 过期时间。账户状态更新可能有该缓存窗口；Supabase 登出主要撤销刷新令牌，已签发 Access Token 通常仍可用到期，建议设置较短有效期（例如 15 分钟）。不使用自建登录 Cookie 或第二套会话系统。
+
+每局由后端签发绑定账号、案件、证据和随机种子的 30 分钟凭证。前端即时播放动画，裁决与计分时后端复算合法出牌、体力、护盾和反击；客户端传入的胜负、分数和等级不参与计分。胜局每关仅奖励一次，数据库行锁确保重试和并发写入不会重复加分，也不会被头像更新覆盖。游客开局不能转为登录账号结算，需要登录后重新开局。
+
+这不是反机器人系统：合法动作序列仍可被脚本求解，前端倒计时也不是可信的真人操作证明。接口按连接 IP 做有界内存限流，不信任客户端自行提供的代理 IP 头；生产反向代理/CDN 还需按真实客户端 IP 统一限流，使用 HTTPS 并妥善保护密钥。浏览器使用 Supabase SDK 持有会话，仍需防范 XSS；当前安全响应头不等同于完整的严格脚本 CSP。
+
+## 验证
+
+```bash
+npm test                   # 前后端单元与 HTTP 边界测试（Supabase Auth 使用测试替身）
+npm run typecheck
+npm run build
+npm run test:database      # Docker 中独立 PostgreSQL 16：迁移、权限与并发写入
+```
+
+数据库测试自动创建并移除临时容器，不读取线上 Supabase 配置。上线仍需在实际项目验证：注册、登录、刷新、退出、首次建档、修改头像、一次胜局及重复请求；同时用 anon/authenticated 身份确认直接写表、写排行榜和调用计分 RPC 都被拒绝。本地测试不能替代真实项目联调。
 
 也可以分别启动：
 
@@ -33,11 +69,11 @@ npm run dev:frontend
 
 部署步骤：
 
-1. 将仓库导入 Vercel，Root Directory 选择 `frontend/`。
+1. 将仓库导入 Vercel，Root Directory 选择 `frontend/`，确保构建允许访问根目录之外的 `backend/src/court-battle.mts`（共用纯规则，不含密钥）。
 2. 在 Vercel 的 Production、Preview 环境分别配置 `NEXT_PUBLIC_API_BASE_URL`，生产值使用 `https://argus-api.tomeet.chat`。
-3. 在 Vercel/Zeabur 的前端环境变量中配置 `NEXT_PUBLIC_SUPABASE_URL=https://tshojzkaojcehjunhbju.supabase.co`，再配置 Supabase Dashboard → Project Settings → API 中的 Publishable key（旧版名称为 `anon key`，代码支持 `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` 或 `NEXT_PUBLIC_SUPABASE_ANON_KEY`）。
-4. 前端不会要求用户填写或验证 Email。由于 Supabase Auth 的密码接口底层需要一个唯一 identity，代码会把用户名编码成不可见的 `argus.local` 内部标识；请在 Supabase Auth → Providers 中开启 Email、关闭 Confirm email，不会向用户展示或发送 Email。若完全关闭 Email provider，则需要改成自建服务端账号系统。
-5. 在 Supabase SQL Editor 中执行 [`supabase/schema.sql`](supabase/schema.sql)，创建玩家档案、用户名唯一索引、闯关记录、RLS 策略和排行榜视图。
+3. 按上述发布窗口要求安排 [`supabase/schema.sql`](supabase/schema.sql)，不要在旧版仍提供写入时单独执行。
+4. 在后端配置 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY` 和 `SUPABASE_ANON_KEY`。service role key 只能放在后端 Secret，不能配置为 `NEXT_PUBLIC_*`。
+5. 前端配置 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`（或旧名称 `NEXT_PUBLIC_SUPABASE_ANON_KEY`）以及 `NEXT_PUBLIC_API_BASE_URL`，并完成上面的 Auth 配置。环境变量变更后需重新构建前端。
 6. 将 `backend/` 部署到支持常驻 Node.js 进程的平台（例如 Render、Railway、Fly.io 或自有服务器）。
 7. 在后端配置 `CORS_ORIGIN`。多个 Vercel 生产/预览域名用英文逗号分隔，例如：
 
@@ -54,6 +90,11 @@ Vercel 前端使用根路径 `/`，不再需要 GitHub Pages 的 `/ARGUS` `baseP
 - `GET /api`：服务版本和路由清单
 - `POST /api/cases/draft`：根据案件概念生成案件草案
 - `POST /api/contracts/audit`：执行首版规则合同审查
+- `GET/PUT /api/profile`、`POST /api/campaign/runs`、`GET /api/leaderboard`：后端账号和成绩接口
+- `GET /api/auth/username-available?username=...`：查询用户名是否可用
+- `POST /api/campaign/battles`：传入 `caseId`、`evidenceIds`，返回开局 `ticket` 和 `seed`
+- `POST /api/campaign/verdict`：传入 `ticket`、`actions` 复算裁决；`actions` 是出牌实例 ID 数组，`null` 表示超时
+- `POST /api/campaign/runs`：使用同样的凭证及 Bearer Token 结算；不接受客户端分数或玩家 ID
 
 示例：
 

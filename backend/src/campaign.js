@@ -1,5 +1,61 @@
-const { randomUUID } = require('node:crypto');
+const { createHmac, randomBytes, randomInt, randomUUID, timingSafeEqual } = require('node:crypto');
 const { campaignCases } = require('./campaign-cases');
+const { actionSeed, battleReducer, emptyBattle, evidenceStats, HAND_SIZE, opponentHealth } = require('./court-battle.mts');
+const { httpError } = require('./auth');
+
+// A dedicated key permits stateless tickets across replicas. In local/demo mode
+// a restart intentionally invalidates outstanding games, never existing scores.
+const battleSigningKey = process.env.CAMPAIGN_SIGNING_KEY || randomBytes(32);
+if (typeof battleSigningKey === 'string' && battleSigningKey.length < 32) throw new Error('CAMPAIGN_SIGNING_KEY must be at least 32 characters');
+const BATTLE_TTL_MS = 30 * 60_000;
+
+function signBattle(payload) {
+  return createHmac('sha256', battleSigningKey).update(payload).digest();
+}
+
+function createBattle(input, profileId = null, now = Date.now()) {
+  const caseData = resolveCase(input.caseId);
+  const ids = input.evidenceIds;
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > HAND_SIZE || new Set(ids).size !== ids.length || ids.some((id) => !caseData.evidence.some((item) => item.id === id))) {
+    throw httpError(400, '请选择 1 到 4 张本关证据卡');
+  }
+  const seed = randomInt(0x100000000);
+  const payload = Buffer.from(JSON.stringify({ v: 1, profileId, caseId: caseData.id, evidenceIds: ids, seed, expiresAt: now + BATTLE_TTL_MS })).toString('base64url');
+  return { ticket: `${payload}.${signBattle(payload).toString('base64url')}`, seed };
+}
+
+function replayBattle(input, profileId, now = Date.now()) {
+  if (typeof input.ticket !== 'string' || input.ticket.length > 4096 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(input.ticket)) throw httpError(400, '缺少有效的开局凭证，请重新开始本关');
+  const [payload, signature] = input.ticket.split('.');
+  const expected = signBattle(payload);
+  const supplied = Buffer.from(signature, 'base64url');
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw httpError(400, '开局凭证无效');
+  const game = JSON.parse(Buffer.from(payload, 'base64url').toString());
+  if (game.v !== 1 || game.expiresAt <= now) throw httpError(409, '本局已过期，请重新开始本关');
+  if (profileId !== undefined && game.profileId !== profileId) throw httpError(403, '只能结算当前账号登录后开始的对局');
+  const actions = input.actions;
+  if (!Array.isArray(actions) || !actions.length || actions.length > 200) throw httpError(400, '出牌记录无效');
+  const caseData = resolveCase(game.caseId);
+  const deck = game.evidenceIds.map((id) => {
+    const item = caseData.evidence.find((evidence) => evidence.id === id);
+    const key = caseData.keyEvidenceIds.includes(id);
+    return { id: `card-${id}`, evidenceId: id, name: item.title, nature: '', key, credibility: item.credibility, text: '', effectText: '', staminaRecovery: 0, shieldGain: 0, ...evidenceStats(item, key, caseData.levelId) };
+  });
+  const enemyHp = opponentHealth(caseData);
+  let state = battleReducer(emptyBattle(enemyHp), { type: 'start', deck, selectedIds: game.evidenceIds, enemyHp, seed: game.seed });
+  for (const [index, cardId] of actions.entries()) {
+    if (state.result || (cardId !== null && (typeof cardId !== 'string' || cardId.length > 120))) throw httpError(400, '出牌记录包含无效操作');
+    const next = cardId === null
+      ? battleReducer(state, { type: 'opponent', levelId: caseData.levelId, timeout: true })
+      : battleReducer(state, { type: 'play', cardId, seed: actionSeed(game.seed, index) });
+    if (next === state) throw httpError(400, '出牌不在手牌中或体力不足');
+    // Counterattacks and resource accounting cannot be skipped by the client.
+    state = cardId === null ? next : battleReducer(next, { type: 'opponent', levelId: caseData.levelId });
+    state = battleReducer(state, { type: 'next' });
+  }
+  if (!state.result) throw httpError(400, '对局尚未结束，不能结算');
+  return buildVerdict({ caseId: game.caseId, evidenceIds: game.evidenceIds, gameResult: state.result });
+}
 
 const demoCase = campaignCases[0];
 
@@ -40,10 +96,15 @@ function respondToDebate(input) {
     error.statusCode = 400;
     throw error;
   }
+  if (argument.length > 2000) {
+    const error = new Error('argument 不能超过 2000 个字符');
+    error.statusCode = 400;
+    throw error;
+  }
   const evidence = selectEvidence(caseData, input);
   const evidenceIds = evidence.map((item) => item.id);
   const missing = caseData.keyEvidenceIds.filter((id) => !evidenceIds.includes(id));
-  const history = Array.isArray(input.history) ? input.history.filter((turn) => turn && (!turn.caseId || turn.caseId === caseData.id)) : [];
+  const history = Array.isArray(input.history) ? input.history.slice(-20).filter((turn) => turn && (!turn.caseId || turn.caseId === caseData.id)) : [];
   const matches = caseData.keywords.map((words) => words.filter((word) => argument.includes(word)).length);
   const coverage = matches.filter(Boolean).length;
   const topic = Math.max(...matches) > 0 ? matches.indexOf(Math.max(...matches)) : history.length % caseData.focus.length;
@@ -99,4 +160,4 @@ function buildVerdict(input) {
   };
 }
 
-module.exports = { getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict };
+module.exports = { createBattle, replayBattle, getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict };

@@ -1,5 +1,6 @@
 -- ARGUS+ player profiles and campaign scores for the username/password MVP.
--- Run this once in Supabase SQL Editor for project tshojzkaojcehjunhbju.
+-- Run in your Supabase SQL Editor. Re-runnable; no existing scores are deleted.
+begin;
 
 create table if not exists public.player_profiles (
   id uuid primary key,
@@ -30,6 +31,8 @@ from public.player_profiles;
 
 create index if not exists campaign_runs_player_created_idx
   on public.campaign_runs (player_id, created_at desc);
+-- Existing prototypes may contain repeated wins. Serialize new settlements by
+-- locking the profile instead of adding an index that would reject old data.
 create index if not exists player_profiles_score_idx
   on public.player_profiles (total_score desc, completed_levels desc);
 create unique index if not exists player_profiles_name_unique_idx
@@ -39,44 +42,97 @@ alter table public.player_profiles enable row level security;
 alter table public.campaign_runs enable row level security;
 
 drop policy if exists "public can read profiles" on public.player_profiles;
-create policy "public can read profiles"
-  on public.player_profiles for select using (true);
 
 drop policy if exists "public can create profiles" on public.player_profiles;
 drop policy if exists "users can create own profiles" on public.player_profiles;
-create policy "users can create own profiles"
-  on public.player_profiles for insert to authenticated
-  with check ((select auth.uid()) = id);
 
 drop policy if exists "public can update profiles" on public.player_profiles;
 drop policy if exists "users can update own profiles" on public.player_profiles;
-create policy "users can update own profiles"
-  on public.player_profiles for update to authenticated
-  using ((select auth.uid()) = id)
-  with check ((select auth.uid()) = id);
 
 drop policy if exists "public can create runs" on public.campaign_runs;
 drop policy if exists "users can create own runs" on public.campaign_runs;
-create policy "users can create own runs"
-  on public.campaign_runs for insert to authenticated
-  with check ((select auth.uid()) = player_id);
 
 drop policy if exists "public can read runs" on public.campaign_runs;
 drop policy if exists "users can read own runs" on public.campaign_runs;
-create policy "users can read own runs"
-  on public.campaign_runs for select to authenticated
-  using ((select auth.uid()) = player_id);
 
+revoke all on public.player_profiles from public, anon, authenticated;
+-- This is an updatable definer view. Supabase default grants may include writes.
+revoke all on public.leaderboard from public, anon, authenticated;
 grant select on public.leaderboard to anon, authenticated;
-grant select on public.player_profiles to anon, authenticated;
-grant insert, update on public.player_profiles to authenticated;
-grant insert, select on public.campaign_runs to authenticated;
-grant usage, select on sequence public.campaign_runs_id_seq to authenticated;
 
 -- Remove broad grants left by the first prototype migration.
-revoke insert, update on public.player_profiles from anon;
-revoke insert, select on public.campaign_runs from anon;
-revoke usage, select on sequence public.campaign_runs_id_seq from anon;
+revoke all on public.campaign_runs from public, anon, authenticated;
+revoke all on sequence public.campaign_runs_id_seq from public, anon, authenticated;
+grant select, insert, update on public.player_profiles to service_role;
+grant select, insert on public.campaign_runs to service_role;
+grant usage, select on sequence public.campaign_runs_id_seq to service_role;
+grant select on public.leaderboard to service_role;
+
+create or replace function public.is_username_available(p_name text, p_email text)
+returns boolean
+language sql stable security definer set search_path = ''
+as $$
+  select not exists (select 1 from public.player_profiles where lower(name) = lower(p_name))
+     and not exists (select 1 from auth.users where lower(email) = lower(p_email));
+$$;
+revoke execute on function public.is_username_available(text, text) from public, anon, authenticated;
+grant execute on function public.is_username_available(text, text) to service_role;
+
+create or replace function public.save_player_profile(p_player_id uuid, p_name text, p_avatar text default null)
+returns public.player_profiles
+language plpgsql security definer set search_path = ''
+as $$
+declare result public.player_profiles;
+begin
+  if not exists (select 1 from auth.users where id = p_player_id) then
+    raise exception using errcode = '23503', message = 'auth user not found';
+  end if;
+  -- Initialization always starts at zero. Updating an avatar never reads or
+  -- writes totals, and cannot overwrite a concurrently settled win or a name.
+  insert into public.player_profiles(id, name, avatar)
+  values (p_player_id, p_name, coalesce(p_avatar, '/assets/lawyer-cat-transparent.png'))
+  on conflict (id) do update
+    set avatar = coalesce(p_avatar, player_profiles.avatar)
+  returning * into result;
+  return result;
+end;
+$$;
+revoke execute on function public.save_player_profile(uuid, text, text) from public, anon, authenticated;
+grant execute on function public.save_player_profile(uuid, text, text) to service_role;
+
+create or replace function public.record_campaign_win(p_player_id uuid, p_level_id integer, p_score integer)
+returns public.player_profiles
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare result public.player_profiles;
+begin
+  if p_score is null or p_score <> 88 or p_level_id is null or p_level_id < 1 or p_level_id > 20 then
+    raise exception 'invalid campaign result';
+  end if;
+  select * into result from public.player_profiles where id = p_player_id for update;
+  if result.id is null then
+    raise exception using errcode = '23503', message = 'player profile not found';
+  end if;
+  -- Retries (including lost HTTP responses) and concurrent requests award once.
+  if exists (select 1 from public.campaign_runs
+             where player_id = p_player_id and level_id = p_level_id and outcome = 'player_win') then
+    return result;
+  end if;
+  insert into public.campaign_runs(player_id, level_id, score, outcome)
+  values (p_player_id, p_level_id, p_score, 'player_win');
+  update public.player_profiles
+    set total_score = total_score + p_score,
+        completed_levels = completed_levels + 1
+    where id = p_player_id
+    returning * into result;
+  return result;
+end;
+$$;
+
+revoke execute on function public.record_campaign_win(uuid, integer, integer) from public, anon, authenticated;
+grant execute on function public.record_campaign_win(uuid, integer, integer) to service_role;
 
 create or replace function public.touch_player_profile_updated_at()
 returns trigger
@@ -92,3 +148,5 @@ drop trigger if exists player_profiles_updated_at on public.player_profiles;
 create trigger player_profiles_updated_at
 before update on public.player_profiles
 for each row execute function public.touch_player_profile_updated_at();
+
+commit;
