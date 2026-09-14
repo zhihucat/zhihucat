@@ -19,6 +19,7 @@ export type BattleState = {
   hand: BattleCard[]; drawPile: BattleCard[]; discardPile: BattleCard[];
   playerHp: number; playerShield: number; enemyHp: number; stamina: number; turn: number;
   cardsPlayed: number; stage: BattleStage;
+  requiredEvidenceIds: string[]; playedEvidenceIds: string[]; requireAllEvidence: boolean;
   result: 'player_win' | 'opponent_win' | null; effect: BattleEffect | null;
 };
 
@@ -56,6 +57,7 @@ export function emptyBattle(enemyHp: number): BattleState {
   return {
     hand: [], drawPile: [], discardPile: [], playerHp: PLAYER_MAX_HP, playerShield: 0, enemyHp,
     stamina: PLAYER_MAX_STAMINA, turn: 1, cardsPlayed: 0, stage: 'idle', result: null, effect: null,
+    requiredEvidenceIds: [], playedEvidenceIds: [], requireAllEvidence: false,
   };
 }
 
@@ -115,7 +117,7 @@ function refillHand(state: BattleState, random: () => number): BattleState {
 }
 
 export type BattleAction =
-  | { type: 'start'; deck: BattleCard[]; selectedIds: string[]; enemyHp: number; seed: number }
+  | { type: 'start'; deck: BattleCard[]; selectedIds: string[]; enemyHp: number; seed: number; requireAllEvidence?: boolean }
   | { type: 'play'; cardId: string; seed: number }
   | { type: 'opponent'; levelId: number; timeout?: boolean }
   | { type: 'next' }
@@ -142,6 +144,7 @@ export function battleReducer(state: BattleState, action: BattleAction): BattleS
     const random = randomFrom(action.seed);
     return refillHand({
       ...emptyBattle(action.enemyHp), stage: 'player', hand,
+      requiredEvidenceIds: [...selectedEvidenceIds], requireAllEvidence: Boolean(action.requireAllEvidence),
       drawPile: shuffled(instances.filter((card) => !hand.includes(card)), random),
     }, random);
   }
@@ -155,9 +158,18 @@ export function battleReducer(state: BattleState, action: BattleAction): BattleS
     const currentShield = state.playerShield ?? 0;
     if (shieldGain && currentShield >= PLAYER_MAX_SHIELD) return state;
     const playerShield = Math.min(PLAYER_MAX_SHIELD, currentShield + shieldGain);
-    const enemyHp = Math.max(0, state.enemyHp - card.value);
+    const playedEvidenceIds = card.evidenceId
+      ? [...new Set([...state.playedEvidenceIds, card.evidenceId])]
+      : state.playedEvidenceIds;
+    const evidenceChainComplete = !state.requireAllEvidence
+      || state.requiredEvidenceIds.every((id) => playedEvidenceIds.includes(id));
+    const damageResult = Math.max(0, state.enemyHp - card.value);
+    // Story mode treats the four selected exhibits as an actual argument chain.
+    // Repeating one strong card may reduce the opposing explanation to one point,
+    // but it cannot end the round until every selected exhibit has been presented.
+    const enemyHp = damageResult === 0 && !evidenceChainComplete ? 1 : damageResult;
     return refillHand({
-      ...state, enemyHp, stamina, playerShield, cardsPlayed: state.cardsPlayed + 1,
+      ...state, enemyHp, stamina, playerShield, playedEvidenceIds, cardsPlayed: state.cardsPlayed + 1,
       hand: state.hand.filter((item) => item.id !== card.id), discardPile: [...state.discardPile, card],
       stage: enemyHp === 0 ? 'finished' : 'player-action', result: enemyHp === 0 ? 'player_win' : null,
       effect: {

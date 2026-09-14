@@ -2,11 +2,13 @@ const { randomUUID } = require('node:crypto');
 const { campaignCases } = require('./campaign-cases');
 
 const demoCase = campaignCases[0];
+const dynamicCases = new Map();
 
 function resolveCase(identifier) {
   // Omitted IDs keep the original demo API compatible. Explicit unknown IDs never fall back.
   if (identifier === undefined || identifier === null) return demoCase;
-  const selected = campaignCases.find((item) => item.id === identifier || String(item.levelId) === String(identifier));
+  const selected = dynamicCases.get(String(identifier))
+    || campaignCases.find((item) => item.id === identifier || String(item.levelId) === String(identifier));
   if (!selected) {
     const error = new Error('关卡不存在，请从关卡地图重新选择');
     error.statusCode = 404;
@@ -24,6 +26,23 @@ function getCampaignLevels() {
 function getCampaignCase(identifier) {
   const { judgment, adversary, keywords, ...caseData } = resolveCase(identifier);
   return structuredClone(caseData);
+}
+
+function registerCampaignCase(caseData) {
+  if (!caseData || typeof caseData !== 'object' || !caseData.id || !Array.isArray(caseData.evidence)) {
+    const error = new Error('动态案卷格式异常');
+    error.statusCode = 500;
+    throw error;
+  }
+  const key = String(caseData.id);
+  // Follow-up debate/verdict requests only need one canonical gameplay schema.
+  // A verified live copy may upgrade the startup fallback, but a later fallback
+  // request can never overwrite that live provenance for another player.
+  const existing = dynamicCases.get(key);
+  const upgradesToLive = existing?.source?.mode !== 'zhihu-live' && caseData.source?.mode === 'zhihu-live';
+  if (!existing || upgradesToLive) dynamicCases.set(key, structuredClone(caseData));
+  const { judgment, adversary, keywords, ...publicCase } = caseData;
+  return structuredClone(publicCase);
 }
 
 function selectEvidence(caseData, input) {
@@ -89,14 +108,17 @@ function buildVerdict(input) {
   return {
     caseId: caseData.id, levelId: caseData.levelId, gameResult,
     status: gameResult,
-    winner: playerWon ? `${caseData.playerSide}（本局胜诉）` : `${caseData.opponentSide}（本局胜诉）`,
+    winner: playerWon
+      ? (caseData.judgment.playerWinner || `${caseData.playerSide}（本局胜诉）`)
+      : (caseData.judgment.opponentWinner || `${caseData.opponentSide}（本局胜诉）`),
     score,
-    award: playerWon ? caseData.judgment.award : `训练裁决：本局游戏结果判定${caseData.opponentSide}胜诉，${caseData.playerSide}的请求不获支持。`,
+    award: playerWon ? caseData.judgment.award : (caseData.judgment.lossAward || `训练裁决：本局游戏结果判定${caseData.opponentSide}胜诉，${caseData.playerSide}的请求不获支持。`),
     chain: chain.length ? chain : ['尚无可核验的本关关键证据'],
-    reasoning: `${playerWon ? caseData.judgment.reasoning : '本局游戏结果显示对方先取得胜利。'}最终裁决依据本局游戏结果，而不是证据是否齐全；证据链仅用于展示本局的举证过程。`,
+    reasoning: `${playerWon ? caseData.judgment.reasoning : (caseData.judgment.lossReasoning || '本局游戏结果显示对方先取得胜利。')}${caseData.judgment.resultNote || '最终裁决依据本局游戏结果，而不是证据是否齐全；证据链仅用于展示本局的举证过程。'}`,
     sources: caseData.judgment.sources,
-    disclaimer: '虚构案件的规则化训练反馈，不是真实法院或仲裁机构裁决，不构成法律意见。',
+    source: caseData.source ? structuredClone(caseData.source) : undefined,
+    disclaimer: caseData.judgment.disclaimer || '虚构案件的规则化训练反馈，不是真实法院或仲裁机构裁决，不构成法律意见。',
   };
 }
 
-module.exports = { getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict };
+module.exports = { getCampaignLevels, getCampaignCase, registerCampaignCase, demoCase, respondToDebate, buildVerdict };

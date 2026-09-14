@@ -2,8 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createServer } = require('./server');
 
-async function withServer(run) {
-  const server = createServer({ corsOrigin: '*' });
+async function withServer(run, options = {}) {
+  const server = createServer({ corsOrigin: '*', ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   const baseUrl = `http://127.0.0.1:${address.port}`;
@@ -16,6 +16,32 @@ async function withServer(run) {
     });
   }
 }
+
+const fakeStoryContent = [
+  '人的血液是蓝色的，接触空气后才会慢慢氧化变红。',
+  '同事的试卷，里面都是关于急救的知识。\n而我的，第一题是：人的血液是什么颜色？',
+  '这段仅用于确认完整接口正文不会被复制进案卷。',
+].join('\n');
+
+const fakeZhihuClient = {
+  async listStories() {
+    return [{
+      work_id: '2025684191967294692', title: '蓝血', artwork: 'https://example.com/blue-blood.jpg',
+      description: '我发现这个世界不对劲，这里的人说，血是蓝的。', labels: ['悬疑', '反转'],
+    }, {
+      work_id: '1747681485547843585', title: '近视眼勇闯恐怖游戏', artwork: '',
+      description: '高度近视玩家进入恐怖游戏。', labels: ['惊悚', '脑洞'],
+    }];
+  },
+  async getStory(workId) {
+    assert.equal(workId, '2025684191967294692');
+    return {
+      work_id: workId, chapter_name: '蓝血', author_name: '桃花先生', author_avatar: '',
+      introduction: '我发现这个世界不对劲，这里的人说，血是蓝的。',
+      labels: ['悬疑', '反转'], content: fakeStoryContent, content_length: fakeStoryContent.length,
+    };
+  },
+};
 
 test('GET /health returns the standalone Node.js service status', async () => {
   await withServer(async (baseUrl) => {
@@ -71,6 +97,152 @@ test('POST /api/contracts/audit returns rule-based findings', async () => {
       }
     }
   });
+});
+
+test('Zhihu story endpoints expose the live catalog and a playable spoiler-free case', async () => {
+  await withServer(async (baseUrl) => {
+    const feedResponse = await fetch(`${baseUrl}/api/zhihu/stories`);
+    const feed = await feedResponse.json();
+    assert.equal(feedResponse.status, 200);
+    assert.equal(feedResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(feed.data.source, 'zhihu-live');
+    assert.equal(feed.data.stories.length, 2);
+    assert.equal(feed.data.stories[0].workId, '2025684191967294692');
+    assert.equal(feed.data.stories[0].playable, true);
+
+    const caseResponse = await fetch(`${baseUrl}/api/zhihu/stories/2025684191967294692/case`);
+    const body = await caseResponse.json();
+    assert.equal(caseResponse.status, 200);
+    assert.equal(caseResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(body.data.id, 'zhihu-story-2025684191967294692');
+    assert.equal(body.data.levelId, 91);
+    assert.equal(body.data.source.author, '桃花先生');
+    assert.equal(body.data.source.mode, 'zhihu-live');
+    assert.equal(body.data.source.verifiedQuoteCount, 2);
+    assert.equal(body.data.source.apiUrl, 'https://api.zhihu.com/km-indep-home/hackathon/v2/story/2025684191967294692');
+    assert.equal(body.data.source.originalUrl, 'https://www.zhihu.com/market/paid_column/2025901212759783232/section/2025684191967294692');
+    assert.notEqual(body.data.source.apiUrl, body.data.source.originalUrl);
+    assert.equal(body.data.judgment, undefined);
+    assert.equal(body.data.storyEnding.title, '案卷暂时封存');
+    assert.equal(body.data.storyEnding.hypotheses.length, 4);
+    assert.deepEqual(body.data.storyEnding.hypotheses.map((item) => item.id), [
+      'world-shift',
+      'perception-memory-shift',
+      'controlled-observation',
+      'insufficient-evidence',
+    ]);
+    assert.ok(body.data.storyEnding.hypotheses.every((item) => (
+      item.title && item.description && item.support && item.evidenceGap && item.nextStep
+    )));
+    assert.equal(body.data.storyEnding.questions.length, 3);
+    assert.deepEqual(
+      body.data.storyEnding.questions.filter((item) => item.recommended).map((item) => item.id),
+      ['cross-check'],
+    );
+    assert.ok(body.data.storyEnding.questions.every((item) => (
+      item.title && item.question && item.explanation && item.informationValue && item.risk && item.limitation
+    )));
+    assert.match(body.data.storyEnding.description, /阶段推演/);
+    assert.match(body.data.storyEnding.description, /不代表原作结局/);
+    assert.match(body.data.storyEnding.closing, /没有替方诺决定真相/);
+    assert.equal(body.data.evidence.length, 6);
+    assert.equal(body.data.keyEvidenceIds.length, 3);
+    assert.deepEqual(body.data.hypothesisEvidenceIds, [
+      'zhihu-story-2025684191967294692-ev-archive',
+      'zhihu-story-2025684191967294692-ev-follower',
+    ]);
+    assert.ok(body.data.documents.some((document) => document.content.includes('原文短引')));
+    assert.ok(body.data.documents.every((document) => !document.content.includes(fakeStoryContent)));
+
+    const genericCaseResponse = await fetch(`${baseUrl}/api/campaign/cases/${body.data.id}`);
+    assert.equal(genericCaseResponse.status, 200);
+    assert.equal(genericCaseResponse.headers.get('cache-control'), 'no-store');
+
+    const payload = {
+      caseId: body.data.id,
+      argument: '红血和蓝血的观察互相冲突，定向测试与跟踪形成异常时间线。',
+      evidenceIds: body.data.keyEvidenceIds,
+      gameResult: 'player_win',
+    };
+    const debate = await postCampaign(baseUrl, 'respond', payload);
+    assert.equal(debate.response.status, 200);
+    assert.equal(debate.body.data.caseId, body.data.id);
+    const verdict = await postCampaign(baseUrl, 'verdict', payload);
+    assert.equal(verdict.response.status, 200);
+    assert.equal(verdict.body.data.source.workId, '2025684191967294692');
+    assert.equal(verdict.body.data.source.mode, 'zhihu-live');
+    assert.equal(verdict.body.data.source.apiUrl, body.data.source.apiUrl);
+    assert.equal(verdict.body.data.source.originalUrl, body.data.source.originalUrl);
+    assert.equal(verdict.body.data.sources[0].url, body.data.source.originalUrl);
+    assert.match(verdict.body.data.disclaimer, /知乎故事公开接口片段/);
+  }, { zhihuClient: fakeZhihuClient });
+});
+
+test('Zhihu story endpoints expose fallback mode without caching the response', async () => {
+  const unavailableZhihuClient = {
+    async listStories() { throw new Error('upstream unavailable'); },
+    async getStory() { throw new Error('upstream unavailable'); },
+  };
+  await withServer(async (baseUrl) => {
+    const feedResponse = await fetch(`${baseUrl}/api/zhihu/stories`);
+    const feed = await feedResponse.json();
+    assert.equal(feedResponse.status, 200);
+    assert.equal(feedResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(feed.data.source, 'curated-fallback');
+
+    const caseResponse = await fetch(`${baseUrl}/api/zhihu/stories/2025684191967294692/case`);
+    const body = await caseResponse.json();
+    assert.equal(caseResponse.status, 200);
+    assert.equal(caseResponse.headers.get('cache-control'), 'no-store');
+    assert.equal(body.data.source.mode, 'curated-fallback');
+  }, { zhihuClient: unavailableZhihuClient });
+});
+
+test('Zhihu story catalog falls back when a valid upstream list omits the featured story', async () => {
+  const incompleteZhihuClient = {
+    async listStories() { return []; },
+    async getStory() { throw new Error('not used'); },
+  };
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/zhihu/stories`);
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(body.data.source, 'curated-fallback');
+    assert.equal(body.data.stories.length, 1);
+    assert.equal(body.data.stories[0].workId, '2025684191967294692');
+    assert.equal(body.data.stories[0].playable, true);
+    assert.match(body.data.warning, /暂无《蓝血》/);
+  }, { zhihuClient: incompleteZhihuClient });
+});
+
+test('a fresh backend instance can debate the featured story before its case endpoint is opened', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/campaign/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        caseId: 'zhihu-story-2025684191967294692',
+        argument: '红血和蓝血的现场观察互相冲突，说明这里存在客观异常。',
+        evidenceIds: [
+          'zhihu-story-2025684191967294692-ev-finger',
+          'zhihu-story-2025684191967294692-ev-gum',
+        ],
+      }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.data.caseId, 'zhihu-story-2025684191967294692');
+  }, { zhihuClient: fakeZhihuClient });
+});
+
+test('unadapted Zhihu stories stay visible but cannot enter the game', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/zhihu/stories/1747681485547843585/case`);
+    const body = await response.json();
+    assert.equal(response.status, 404);
+    assert.match(body.error.message, /尚未完成互动案卷/);
+  }, { zhihuClient: fakeZhihuClient });
 });
 
 test('invalid JSON returns a 400 response', async () => {

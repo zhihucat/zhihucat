@@ -55,12 +55,20 @@ type CampaignEvidence = { id: string; title: string; description: string; proofP
 type CampaignScene = { id: string; title: string; description: string; hotspots: Array<{ id: string; title: string; icon: string; evidenceId: string; hint: string }> };
 type CampaignDocument = { id: string; name: string; type: string; content: string; hotspots: Array<{ id: string; evidenceId: string; label: string }> };
 type CampaignLevel = { id: string; levelId: number; title: string; desc: string; difficulty: number; goal: string; keyEvidenceCount: number };
-type DemoCase = { id: string; levelId: number; levelTitle: string; title: string; summary: string; type: string; difficulty: number; playerSide: string; opponentSide: string; goal: string; actionPoints?: number; focus: string[]; scenes: CampaignScene[]; documents: CampaignDocument[]; evidence: CampaignEvidence[]; keyEvidenceIds: string[] };
+type StorySource = { provider: string; workId: string; title: string; author: string; labels: string[]; artwork?: string; introduction?: string; mode?: string; notice?: string; apiUrl?: string; originalUrl?: string; verifiedQuoteCount?: number };
+type StoryHypothesis = { id: string; title: string; description: string; support: string; evidenceGap: string; nextStep: string };
+type StoryQuestion = { id: string; title: string; question: string; explanation: string; informationValue: string; risk: string; limitation: string; recommended?: boolean };
+type StoryEnding = { title: string; description: string; hypotheses: StoryHypothesis[]; questions: StoryQuestion[]; closing: string };
+type ZhihuStorySummary = { workId: string; caseId: string; title: string; artwork: string; description: string; labels: string[]; playable: boolean };
+type ZhihuStoryFeed = { stories: ZhihuStorySummary[]; source: string; featuredWorkId: string; warning?: string };
+type DemoCase = { id: string; levelId: number; levelTitle: string; title: string; summary: string; type: string; difficulty: number; playerSide: string; opponentSide: string; goal: string; actionPoints?: number; focus: string[]; scenes: CampaignScene[]; documents: CampaignDocument[]; evidence: CampaignEvidence[]; keyEvidenceIds: string[]; hypothesisEvidenceIds?: string[]; source?: StorySource; storyEnding?: StoryEnding };
 type DebateResult = { caseId: string; courtTurn?: number; response: string; judge: string; scoreChange: number; turn?: { id: string; speaker: string; argument: string; evidenceIds: string[]; response: string; judge: string; scoreChange: number; createdAt: string } };
 type GameResult = 'player_win' | 'opponent_win';
-type Verdict = { caseId: string; gameResult: GameResult; status: GameResult; winner: string; score: number; award: string; chain: string[]; reasoning: string; sources: LawSource[]; disclaimer: string };
+type Verdict = { caseId: string; gameResult: GameResult; status: GameResult; winner: string; score: number; award: string; chain: string[]; reasoning: string; sources: LawSource[]; source?: StorySource; disclaimer: string };
 
 type CommunityPost = { id: string; author: string; time: string; title: string; body: string; tags: string[]; likes: number; comments: number };
+
+const STORY_PROGRESS_STORAGE_KEY = 'argus-story-progress-v1';
 
 const AVATARS = [
   { id: 'lawyer', src: '/assets/lawyer-cat-transparent.png', label: '蓝袍律师猫' },
@@ -113,13 +121,23 @@ function buildHand(demo: DemoCase, evidenceIds: string[], locale: Locale = 'zh')
 
 /* Keep case difficulty tied to the strongest four exhibits, independent of random draws. */
 function opponentHealth(demo: DemoCase, locale: Locale = 'zh') {
-  const health = demo.evidence
-    .map((item) => evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale))
+  const evidenceCards = demo.evidence
+    .map((item) => evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale));
+  const health = evidenceCards
     .sort((a, b) => Number(b.key) - Number(a.key) || b.value - a.value)
     .slice(0, HAND_SIZE)
     // Keep the first case readable as a tutorial: one full player health bar
     // is a clear target, while later cases retain their evidence-derived scale.
     .reduce((total, card) => total + card.value, 0);
+  if (demo.source) {
+    // A correct Blue Blood deck contains all three anchors plus one free-direction
+    // card. Size the opposing explanation so those four distinct exhibits can end
+    // the round; recovery and shield plays still matter, but repeating evidence is
+    // never required just to overcome a one-point rounding gap.
+    const keyPower = evidenceCards.filter((card) => card.key).reduce((total, card) => total + card.value, 0);
+    const supportPower = evidenceCards.filter((card) => !card.key).map((card) => card.value);
+    return supportPower.length ? keyPower + Math.min(...supportPower) : health;
+  }
   return demo.levelId === BEGINNER_LEVEL_ID ? Math.min(BEGINNER_ENEMY_HP, health) : health;
 }
 
@@ -161,7 +179,6 @@ export default function HomePage() {
   const [profileError, setProfileError] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
-  const [entryAuthDismissed, setEntryAuthDismissed] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -174,7 +191,7 @@ export default function HomePage() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
     document.documentElement.lang = locale === 'en' ? 'en' : 'zh-CN';
-    document.title = locale === 'en' ? 'Courtroom Quest · ARGUS+' : '法庭闯关 · ARGUS+';
+    document.title = locale === 'en' ? 'Blue Blood Mystery · ARGUS+' : '蓝血疑云 · ARGUS+';
   }, [locale]);
 
   useEffect(() => {
@@ -298,7 +315,6 @@ export default function HomePage() {
   }
 
   function openAuthModal() {
-    setEntryAuthDismissed(true);
     setProfileOpen(false);
     setAuthOpen(true);
   }
@@ -311,10 +327,11 @@ export default function HomePage() {
       completedLevels: playerProfile.completedLevels + 1,
     };
     setPlayerProfile(nextProfile);
-    try {
-      await saveCampaignRun({ playerId, levelId, score, outcome: 'player_win' });
-      await savePlayerProfile(nextProfile);
-    } catch {
+    const syncResults = await Promise.allSettled([
+      saveCampaignRun({ playerId, levelId, score, outcome: 'player_win' }),
+      savePlayerProfile(nextProfile),
+    ]);
+    if (syncResults.some((result) => result.status === 'rejected')) {
       setProfileError(APP_COPY[locale].profileRunSavedLocal);
     }
   }
@@ -362,11 +379,11 @@ export default function HomePage() {
         </header>
 
         <div className="page-shell" id="main-content">
-          <CampaignSection onRunComplete={handleRunComplete} />
+          <CampaignSection progressOwnerId={playerId} onRunComplete={handleRunComplete} />
         </div>
         {profileError && <p className="profile-sync-note" role="status">{profileError}</p>}
-        {!profileLoading && !authOpen && ((!isSupabaseConfigured && (!playerProfile || profileOpen)) || (Boolean(authUser) && (!playerProfile || profileOpen))) && <ProfileModal profile={playerProfile} authenticated={Boolean(authUser)} onSave={handleSaveProfile} onClose={() => playerProfile && setProfileOpen(false)} onAuthRequest={openAuthModal} />}
-        {(!entryAuthDismissed && !profileLoading && isSupabaseConfigured && !authUser && !playerProfile) || authOpen ? <AuthModal onClose={() => { setAuthOpen(false); setEntryAuthDismissed(true); }} onSuccess={handleAuthSuccess} /> : null}
+        {!profileLoading && !authOpen && profileOpen && <ProfileModal profile={playerProfile} authenticated={Boolean(authUser)} onSave={handleSaveProfile} onClose={() => setProfileOpen(false)} onAuthRequest={openAuthModal} />}
+        {authOpen ? <AuthModal onClose={() => setAuthOpen(false)} onSuccess={handleAuthSuccess} /> : null}
       </main>
     </LocaleContext.Provider>
   );
@@ -413,27 +430,58 @@ function AuditSection({ onSubmit, loading, error, result }: { onSubmit: (event: 
   </section>;
 }
 
-function CampaignSection({ onRunComplete }: { onRunComplete: (levelId: number, score: number) => Promise<void> }) {
+function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: string; onRunComplete: (levelId: number, score: number) => Promise<void> }) {
   const { locale } = useLocale();
   const copy = APP_COPY[locale];
   const apiBaseUrl = useMemo(() => (process.env.NEXT_PUBLIC_API_BASE_URL || '/argus-api').replace(/\/$/, ''), []);
-  const [levels, setLevels] = useState<CampaignLevel[]>([]);
+  const [storyFeed, setStoryFeed] = useState<ZhihuStoryFeed | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [demo, setDemo] = useState<DemoCase | null>(null);
   const [completed, setCompleted] = useState<Record<string, number>>({});
+  const [progressReady, setProgressReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
+  const skipProgressWriteRef = useRef(false);
+  const progressStorageKey = `${STORY_PROGRESS_STORAGE_KEY}:${progressOwnerId || 'initializing'}`;
+
+  useEffect(() => {
+    if (!progressOwnerId) return;
+    skipProgressWriteRef.current = true;
+    setProgressReady(false);
+    try {
+      const saved = window.localStorage.getItem(progressStorageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved) as Record<string, unknown>;
+        const safe = Object.fromEntries(Object.entries(parsed).filter(([, score]) => typeof score === 'number' && Number.isFinite(score)));
+        setCompleted(safe as Record<string, number>);
+      } else setCompleted({});
+    } catch {
+      // Corrupt or unavailable storage must never block the playable story.
+      setCompleted({});
+    } finally {
+      setProgressReady(true);
+    }
+  }, [progressOwnerId, progressStorageKey]);
+
+  useEffect(() => {
+    if (!progressReady || !progressOwnerId) return;
+    if (skipProgressWriteRef.current) { skipProgressWriteRef.current = false; return; }
+    try { window.localStorage.setItem(progressStorageKey, JSON.stringify(completed)); }
+    catch { /* Private browsing can deny storage; the current run still works. */ }
+  }, [completed, progressOwnerId, progressReady, progressStorageKey]);
+
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError(''); setDemo(null);
+    const storyWorkId = selectedId?.startsWith('zhihu-story-') ? selectedId.slice('zhihu-story-'.length) : '';
     const load = selectedId
-      ? requestJson<DemoCase>(`${apiBaseUrl}/api/campaign/cases/${encodeURIComponent(selectedId)}`, { signal: controller.signal }).then((data) => {
+      ? requestJson<DemoCase>(`${apiBaseUrl}/api/zhihu/stories/${encodeURIComponent(storyWorkId)}/case`, { signal: controller.signal }).then((data) => {
         if (data.id !== selectedId) throw new Error('案件与所选关卡不一致，请重试');
         if (!controller.signal.aborted) setDemo(data);
       })
-      : requestJson<CampaignLevel[]>(`${apiBaseUrl}/api/campaign/levels`, { signal: controller.signal }).then((data) => {
-        if (!controller.signal.aborted) setLevels(data);
+      : requestJson<ZhihuStoryFeed>(`${apiBaseUrl}/api/zhihu/stories`, { signal: controller.signal }).then((stories) => {
+        if (!controller.signal.aborted) setStoryFeed(stories);
       });
     load.catch((e: Error) => { if (!controller.signal.aborted) setError(e.message); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
@@ -441,30 +489,44 @@ function CampaignSection({ onRunComplete }: { onRunComplete: (levelId: number, s
   }, [apiBaseUrl, selectedId, retry]);
 
   const selectLevel = (id: string | null) => { setDemo(null); setError(''); setLoading(true); setSelectedId(id); };
-  const nextLevel = levels[levels.findIndex((level) => level.id === selectedId) + 1];
   if (selectedId && demo?.id === selectedId) return <CampaignRun
     key={demo.id} demo={demo} apiBaseUrl={apiBaseUrl} onBack={() => selectLevel(null)}
     onComplete={(score) => {
+      const firstCompletion = !completed[demo.id];
       setCompleted((items) => ({ ...items, [demo.id]: Math.max(items[demo.id] || 0, score) }));
-      void onRunComplete(demo.levelId, score);
+      if (firstCompletion) void onRunComplete(demo.levelId, score);
     }}
-    onNext={nextLevel ? () => selectLevel(nextLevel.id) : undefined}
   />;
-  if (loading || error || selectedId) return <section className="panel loading-panel" aria-label="法庭闯关">
-    {selectedId && <button type="button" className="button secondary" onClick={() => selectLevel(null)}>{copy.campaignBack}</button>}
+  if (loading || error || selectedId) return <section className="panel loading-panel" aria-label={locale === 'en' ? 'Blue Blood interactive story' : '《蓝血》互动故事'}>
+    {selectedId && <button type="button" className="button secondary" onClick={() => selectLevel(null)}>{locale === 'en' ? 'Back to story' : '返回故事页'}</button>}
     {error ? <><p className="error-message" role="alert">{error}</p><button type="button" className="button primary" onClick={() => setRetry((value) => value + 1)}> {locale === 'en' ? 'Reload' : '重新加载'} </button></> : <p role="status">{selectedId ? copy.campaignLoadingCase : copy.campaignLoadingMap}</p>}
   </section>;
-  const recommended = levels.find((level) => !completed[level.id])?.id;
-  const visibleLevels = levels.map((level) => ({
-    ...level,
-    ...getLevelCopy(level.levelId, locale, { title: level.title, desc: level.desc }),
-  }));
-  return <section className="campaign-shell campaign-map-shell" aria-label={copy.campaignTitle}>
-    <div className="campaign-header"><div><h2>{copy.campaignTitle} <small>{copy.campaignSubtitle}</small></h2><p className="campaign-lead">{copy.campaignLead}</p></div><div className="campaign-header-stats"><span className="tag">{copy.campaignTag}</span><span className="tag ready">{interpolate(copy.campaignOpen, { count: levels.length })}</span><span className="tag">{interpolate(copy.campaignProgress, { done: Object.keys(completed).length, total: levels.length })}</span></div></div>
-    <div className="campaign-map">{visibleLevels.map((level) => <button type="button" key={level.id} className={`level-node ${completed[level.id] ? 'completed' : level.id === recommended ? 'current' : ''}`} onClick={() => selectLevel(level.id)}>
-      <span className="level-num">{level.levelId}</span><strong className="level-title">{level.title}</strong><small>{level.desc}</small><small>{copy.campaignDifficulty} {level.difficulty} · {level.keyEvidenceCount} {copy.campaignKeyEvidenceCount}</small><span className="level-stars">{completed[level.id] ? '★★★' : '☆☆☆'}</span>
-    </button>)}</div>
-    <div className="panel campaign-rules"><strong>{copy.campaignRulesTitle}</strong><span>{copy.campaignRulesBody}</span></div>
+  const featuredStory = storyFeed?.stories.find((story) => story.playable);
+  if (!featuredStory) return <section className="panel loading-panel"><p className="error-message">{locale === 'en' ? 'The featured story is unavailable.' : '今日互动案卷暂不可用，请稍后重试。'}</p><button type="button" className="button primary" onClick={() => setRetry((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重新加载'}</button></section>;
+  const finishedScore = completed[featuredStory.caseId];
+  return <section className="campaign-shell blueblood-home" aria-label={locale === 'en' ? 'Blue Blood interactive story' : '《蓝血》互动故事'}>
+    <header className="blueblood-home-header">
+      <div><span className="eyebrow">ZHIHU STORY · INTERACTIVE CASE</span><h1>{locale === 'en' ? 'Blue Blood: Which world is wrong?' : '蓝血疑云：谁的世界出了错？'}</h1><p>{locale === 'en' ? 'Return to the public excerpt, collect verifiable clues, and defend the strongest explanation without inventing the original ending.' : '回到知乎公开片段取证。不要猜作者的结局，只判断哪一种解释最经得起质证。'}</p></div>
+      <div className="blueblood-live-status"><span className={`live-dot ${storyFeed?.source === 'zhihu-live' ? 'online' : ''}`} /><strong>{storyFeed?.source === 'zhihu-live' ? (locale === 'en' ? 'Zhihu API connected' : '知乎 API 已连接') : (locale === 'en' ? 'Curated offline mode' : '策划离线模式')}</strong><small>{storyFeed?.warning ? (locale === 'en' ? 'Upstream unavailable · safe fallback active' : '上游暂不可用 · 已启用透明降级') : `Work ID ${featuredStory.workId}`}</small></div>
+    </header>
+    <article className="blueblood-hero">
+      <div className="blueblood-cover">{featuredStory.artwork ? <img src={featuredStory.artwork} alt={locale === 'en' ? 'Blue Blood cover' : '《蓝血》封面'} /> : <span>BLUE<br />BLOOD</span>}<i /></div>
+      <div className="blueblood-story-copy">
+        <div className="story-tags"><span className="tag ready">{locale === 'en' ? 'Only playable story' : '唯一完整案卷'}</span>{featuredStory.labels.slice(0, 5).map((label) => <span className="tag" key={label}>{label}</span>)}</div>
+        <p className="blueblood-hook">{featuredStory.description || (locale === 'en' ? 'Everyone says blood is blue. Mine is red.' : '所有人都说血是蓝色的，只有我的血从一开始就是红色。')}</p>
+        <div className="blueblood-stats"><span><strong>3</strong>{locale === 'en' ? 'scenes' : '个调查场景'}</span><span><strong>6</strong>{locale === 'en' ? 'case clues' : '条案卷线索'}</span><span><strong>4</strong>{locale === 'en' ? 'cards in court' : '张上庭卡牌'}</span><span><strong>1</strong>{locale === 'en' ? 'question to ask' : '个知乎求证问题'}</span></div>
+        <p className="blueblood-boundary">{locale === 'en' ? 'Based only on the public excerpt supplied by the hackathon API. Your result is a provisional inference, never the original ending.' : '仅使用黑客松 API 提供的公开片段。游戏结果是阶段推演，不代表原作结局。'}</p>
+        <div className="blueblood-actions"><button type="button" className="button primary" onClick={() => selectLevel(featuredStory.caseId)}>{finishedScore ? (locale === 'en' ? 'Investigate again' : '重新进入调查') : (locale === 'en' ? 'Seal the plot and investigate' : '封存剧情，进入调查')}</button>{finishedScore ? <span>{locale === 'en' ? `Best verdict: ${finishedScore}` : `已完成 · 最佳裁决 ${finishedScore} 分`}</span> : <span>{locale === 'en' ? 'About 3 minutes' : '预计体验 3 分钟'}</span>}</div>
+      </div>
+    </article>
+    <div className="blueblood-loop" aria-label={locale === 'en' ? 'Game flow' : '游戏流程'}>
+      {[
+        ['01', locale === 'en' ? 'Know the hook' : '阅读简介', locale === 'en' ? 'Learn only what Fang Nuo knows at the opening.' : '只了解方诺在开篇已经知道的事实。'],
+        ['02', locale === 'en' ? 'Search the excerpt' : '原文搜证', locale === 'en' ? 'Find six clues across three scenes.' : '在三个场景中找到六条可核验线索。'],
+        ['03', locale === 'en' ? 'Build four cards' : '六选四组牌', locale === 'en' ? 'Use four exhibits to challenge ordinary explanations.' : '用四张证据卡挑战疲劳、误记与巧合。'],
+        ['04', locale === 'en' ? 'Choose a question' : '选择求证', locale === 'en' ? 'Pick a hypothesis and a safer Zhihu question.' : '选择阶段假说，并替方诺设计知乎问题。'],
+      ].map(([number, title, body]) => <article key={number}><span>{number}</span><strong>{title}</strong><p>{body}</p></article>)}
+    </div>
   </section>;
 }
 
@@ -474,8 +536,8 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   const levelCopy = getLevelCopy(demo.levelId, locale, { title: demo.levelTitle, desc: demo.type });
   const visibleDemo = useMemo(() => ({
     ...demo,
-    title: levelCopy.title,
-    levelTitle: levelCopy.title,
+    title: demo.source ? demo.title : levelCopy.title,
+    levelTitle: demo.source ? demo.levelTitle : levelCopy.title,
     summary: translateCaseText(demo.summary, locale, 'This case presents a legal dispute. Review the source materials and build an evidence-based argument.'),
     goal: translateCaseText(demo.goal, locale, 'Build the strongest argument from the source materials and answer the opposing position.'),
     type: getTypeCopy(demo.type, locale),
@@ -486,7 +548,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     documents: demo.documents.map((doc) => ({ ...doc, name: translateCaseText(doc.name, locale, 'Source document'), content: translateCaseText(doc.content, locale, 'Translated source material is shown here for training.'), hotspots: doc.hotspots.map((spot) => ({ ...spot, label: translateCaseText(spot.label, locale, 'Evidence pointer') })) })),
     evidence: demo.evidence.map((item) => ({ ...item, title: translateCaseText(item.title, locale, 'Case exhibit'), description: translateCaseText(item.description, locale, 'Relevant fact from the source materials.'), proofPurpose: translateCaseText(item.proofPurpose, locale, 'Supports the argument.'), authenticity: item.authenticity ? translateCaseText(item.authenticity, locale, 'Source status') : item.authenticity, relevance: item.relevance ? translateCaseText(item.relevance, locale, 'High relevance') : item.relevance })),
   }), [demo, levelCopy.desc, levelCopy.title, locale]);
-  const [phase, setPhase] = useState<'investigate' | 'court'>('investigate');
+  const [phase, setPhase] = useState<'investigate' | 'court' | 'ending'>('investigate');
   const [sceneId, setSceneId] = useState(demo.scenes[0].id);
   const [documentId, setDocumentId] = useState(demo.documents[0].id);
   const [discovered, setDiscovered] = useState<string[]>([]);
@@ -507,6 +569,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   const lossSoundRef = useRef<HTMLAudioElement | null>(null);
   const courtSfxRef = useRef<ReturnType<typeof createCourtSfx> | null>(null);
   const lastSoundEffectRef = useRef<BattleEffect | null>(null);
+  const playedEvidenceIdsRef = useRef<string[]>([]);
 
   const responseRequestRef = useRef<AbortController | null>(null);
 
@@ -585,7 +648,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     return () => window.clearInterval(timer);
   }, [phase, battle.stage, turn, submitting, verdict, demo.levelId]);
 
-  async function submitArgumentText(text: string) {
+  async function submitArgumentText(text: string, evidenceIds: string[]) {
     const controller = new AbortController();
     responseRequestRef.current?.abort();
     responseRequestRef.current = controller;
@@ -593,7 +656,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     try {
       const result = await requestJson<DebateResult>(`${apiBaseUrl}/api/campaign/respond`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ caseId: demo.id, argument: text, evidenceIds: selectedEvidence, history: debate }),
+        body: JSON.stringify({ caseId: demo.id, argument: text, evidenceIds, history: debate }),
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -616,7 +679,11 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     dispatchBattle({ type: 'play', cardId: current.id, seed: Math.floor(Math.random() * 4294967296) });
     setScore((value) => value + current.value);
     // Recovery is a tactical action, not fabricated evidence for the legal API.
-    if (current.evidenceId) void submitArgumentText(current.text);
+    if (current.evidenceId) {
+      const evidenceIds = [...new Set([...playedEvidenceIdsRef.current, current.evidenceId])];
+      playedEvidenceIdsRef.current = evidenceIds;
+      void submitArgumentText(current.text, evidenceIds);
+    }
   }
 
   function returnToInvestigation() {
@@ -625,6 +692,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     courtSfxRef.current?.dispose();
     courtSfxRef.current = null;
     lastSoundEffectRef.current = null;
+    playedEvidenceIdsRef.current = [];
     setPhase('investigate'); setVerdict(null); setSubmitting(false); setError('');
     dispatchBattle({ type: 'reset', enemyHp: maxEnemyHp });
   }
@@ -633,7 +701,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     if (!battleResult || submitting || verdict) return;
     setSubmitting(true); setError('');
     try {
-      const result = await requestJson<Verdict>(`${apiBaseUrl}/api/campaign/verdict`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: demo.id, evidenceIds: selectedEvidence, debate, gameResult: battleResult }) });
+      const result = await requestJson<Verdict>(`${apiBaseUrl}/api/campaign/verdict`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: demo.id, evidenceIds: playedEvidenceIdsRef.current, debate, gameResult: battleResult }) });
       if (result.caseId !== demo.id) throw new Error(locale === 'en' ? 'The verdict does not match the current case. Please retry.' : '裁决与当前案件不一致，请重试');
       if (locale === 'en') {
         result.winner = translateCaseText(result.winner, locale, 'Winning side');
@@ -644,7 +712,8 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
         result.sources = result.sources.map((source) => ({ ...source, title: translateCaseText(source.title, locale, 'Legal source'), article: translateCaseText(source.article, locale, 'Applicable legal rule'), status: translateCaseText(source.status, locale, 'Training reference') }));
       }
       setVerdict(result);
-      if (result.gameResult === 'player_win') onComplete(result.score);
+      if (result.gameResult === 'player_win' && demo.storyEnding) setPhase('ending');
+      else if (result.gameResult === 'player_win') onComplete(result.score);
     }
     catch (e) { setError(e instanceof Error ? e.message : (locale === 'en' ? 'Failed to request verdict' : '裁决请求失败')); }
     finally { setSubmitting(false); }
@@ -670,6 +739,10 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     setInvestigationScore((value) => value + 5);
     setInvestigationLog((items) => [`${copy.campaignFound}：${clueLabel}`, ...items].slice(0, 5));
   };
+  const isCourtEligible = (id: string) => !demo.source
+    || demo.keyEvidenceIds.includes(id)
+    || !demo.hypothesisEvidenceIds?.length
+    || demo.hypothesisEvidenceIds.includes(id);
   const toggleEvidence = (id: string) => {
     // Collecting an exhibit and bringing it to court are separate choices.
     // Clicking a card only toggles its court selection; an unselected card stays
@@ -680,6 +753,10 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
       setError('');
       return;
     }
+    if (!isCourtEligible(id)) {
+      setError(locale === 'en' ? 'This clue establishes the shared background. Choose the archive or follower clue as your fourth hypothesis card.' : '这张线索用于建立共同背景；第四张方向牌请在“城市资料”和“灰夹克”之间选择。');
+      return;
+    }
     setSelectedEvidence((ids) => {
       if (ids.length >= HAND_SIZE) { setError(locale === 'en' ? `You can bring at most ${HAND_SIZE} evidence cards.` : `上庭最多带 ${HAND_SIZE} 张证据卡，请先取消一张。`); return ids; }
       setError('');
@@ -687,6 +764,21 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     });
   };
   const enterCourt = () => {
+    if (demo.source && discovered.length !== demo.evidence.length) {
+      const missingCount = demo.evidence.length - discovered.length;
+      setError(locale === 'en' ? `Explore all three scenes first. ${missingCount} clue${missingCount === 1 ? '' : 's'} remain.` : `请先完成三个场景的搜证，还有 ${missingCount} 条线索未发现。`);
+      return;
+    }
+    if (demo.source && selectedEvidence.length !== HAND_SIZE) {
+      setError(locale === 'en' ? `Build a complete hand of ${HAND_SIZE} evidence cards first.` : `请先组成完整的 ${HAND_SIZE} 张证据牌组。`);
+      return;
+    }
+    const missingKeys = demo.keyEvidenceIds.filter((id) => !selectedEvidence.includes(id));
+    if (demo.source && missingKeys.length) {
+      const missingTitles = demo.evidence.filter((item) => missingKeys.includes(item.id)).map((item) => item.title).join('、');
+      setError(locale === 'en' ? 'Your evidence chain is still missing a required anchor.' : `证据链尚未闭合，请补入：${missingTitles}`);
+      return;
+    }
     if (!selectedEvidence.length) { setError(locale === 'en' ? 'Select at least one evidence card before entering trial.' : '请先选择至少一张证据卡带入法庭。'); return; }
     // Unlock Web Audio in the entry click, before delayed combat effects run.
     courtSfxRef.current ??= createCourtSfx();
@@ -694,18 +786,110 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     lastSoundEffectRef.current = null;
     dispatchBattle({
       type: 'start', deck: buildHand(demo, selectedEvidence, locale), selectedIds: selectedEvidence,
-      enemyHp: maxEnemyHp, seed: Math.floor(Math.random() * 4294967296),
+      enemyHp: maxEnemyHp, seed: Math.floor(Math.random() * 4294967296), requireAllEvidence: Boolean(demo.source),
     });
+    playedEvidenceIdsRef.current = [];
     setPhase('court'); setTurnTimer(TURN_SECONDS); setVerdict(null);
     setDebate([]); setScore(0); setSubmitting(false); setError('');
   };
+  const verifiedQuoteCount = demo.source?.verifiedQuoteCount || 0;
+  const hasLiveQuotes = demo.source?.mode === 'zhihu-live' && verifiedQuoteCount > 0;
+  const storyReaderTitle = hasLiveQuotes
+    ? (locale === 'en' ? 'Public excerpt anchors' : '公开片段锚点')
+    : demo.source?.mode === 'zhihu-live'
+      ? (locale === 'en' ? 'Curated clue notes' : '策划线索转述')
+      : (locale === 'en' ? 'Offline case notes' : '离线案卷线索');
+  const storyReaderBadge = hasLiveQuotes
+    ? (locale === 'en' ? `${verifiedQuoteCount} quotes verified` : `${verifiedQuoteCount} 条短引已核验`)
+    : demo.source?.mode === 'zhihu-live'
+      ? (locale === 'en' ? 'Anchor not matched' : '原文锚点未命中')
+      : (locale === 'en' ? 'Curated fallback' : '策划离线转述');
+  if (phase === 'ending' && verdict && demo.storyEnding) return <section className="campaign-shell campaign-run-shell story-ending-shell" aria-label={locale === 'en' ? 'Story conclusion' : '故事阶段结论'}>
+    <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={locale === 'en' ? 'Back to story' : '返回故事页'}>←</button><div className="phase-rail"><span className="done">1 {locale === 'en' ? 'Investigation' : '线索搜证'}</span><i>→</i><span className="done">2 {locale === 'en' ? 'Challenge' : '解释力对决'}</span><i>→</i><span className="active">3 END</span></div></div>
+    {demo.source && <div className="story-source-strip"><strong>{demo.source.provider}《{demo.source.title}》</strong><span>{locale === 'en' ? 'Author' : '作者'}：{demo.source.author} · Work ID {demo.source.workId}</span><small>{demo.source.notice}</small></div>}
+    <StoryEndingPanel demo={visibleDemo} verdict={verdict} selectedEvidence={selectedEvidence} onRetry={returnToInvestigation} onFinish={() => { onComplete(verdict.score); onBack(); }} />
+  </section>;
   return <section className="campaign-shell campaign-run-shell" aria-label={copy.navCampaign}>
-    <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={copy.campaignBack}>{locale === 'en' ? '←' : '←'}</button><div className="phase-rail"><span className={phase === 'investigate' ? 'active' : 'done'}>{copy.courtInvestigate}</span><i>→</i><span className={phase === 'court' ? 'active' : ''}>{copy.courtTrial}</span><i>→</i><span className={verdict ? 'active' : ''}>{copy.courtVerdict}</span></div></div>{briefOpen && <div className="level-brief-overlay"><div className="level-brief-card"><span className="brief-stamp">CASE {demo.levelId}</span><h2>{visibleDemo.title}</h2><p>{visibleDemo.summary}</p><h3>{copy.briefTitle}</h3><p>{visibleDemo.goal}</p><button type="button" className="button primary" onClick={() => setBriefOpen(false)}>{copy.campaignStart}</button></div></div>}<div className="campaign-intro-wrap"><button type="button" className="button secondary back-to-map" onClick={onBack}>{copy.campaignBack}</button><div className="panel campaign-intro"><div><span className="tag ready">{locale === 'en' ? 'Level' : '第'} {demo.levelId} {locale === 'en' ? '·' : '关 ·'} {visibleDemo.type} {locale === 'en' ? '· Difficulty' : '· 难度'} {demo.difficulty}</span><h2>{`${phase === 'investigate' ? copy.courtInvestigate : copy.courtTrial}：${visibleDemo.title}`}</h2><p>{visibleDemo.goal}</p></div><div className="campaign-kpis"><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Collected' : '已取证') : copy.courtPlayerHp}</small><strong>{phase === 'investigate' ? `${discovered.length}` : `${playerHp}/${PLAYER_MAX_HP}`}</strong></span><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Key evidence' : '关键证据') : copy.courtOpponentHp}</small><strong>{phase === 'investigate' ? `${demo.keyEvidenceIds.filter((id) => discovered.includes(id)).length}/${demo.keyEvidenceIds.length}` : `${enemyHp}/${maxEnemyHp}`}</strong></span><span><small>{locale === 'en' ? 'Score' : '总分'}</small><strong>{investigationScore + score}</strong></span></div></div></div>
+    <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={demo.source ? (locale === 'en' ? 'Back to story' : '返回故事页') : copy.campaignBack}>←</button><div className="phase-rail"><span className={phase === 'investigate' ? 'active' : 'done'}>{demo.source ? (locale === 'en' ? 'Investigation' : '线索搜证') : copy.courtInvestigate}</span><i>→</i><span className={phase === 'court' ? 'active' : ''}>{demo.source ? (locale === 'en' ? 'Challenge' : '解释力对决') : copy.courtTrial}</span><i>→</i><span>{demo.source ? 'END' : copy.courtVerdict}</span></div></div>{briefOpen && (demo.source ? <StoryBrief demo={visibleDemo} onStart={() => setBriefOpen(false)} onBack={onBack} /> : <div className="level-brief-overlay"><div className="level-brief-card"><span className="brief-stamp">{`CASE ${demo.levelId}`}</span><h2>{visibleDemo.title}</h2><p>{visibleDemo.summary}</p><h3>{copy.briefTitle}</h3><p>{visibleDemo.goal}</p><button type="button" className="button primary" onClick={() => setBriefOpen(false)}>{copy.campaignStart}</button></div></div>)}<div className="campaign-intro-wrap"><button type="button" className="button secondary back-to-map" onClick={onBack}>{copy.campaignBack}</button><div className="panel campaign-intro"><div><span className="tag ready">{demo.source ? '知乎故事互动案卷' : `${locale === 'en' ? 'Level' : '第'} ${demo.levelId} ${locale === 'en' ? '·' : '关 ·'} ${visibleDemo.type}`} {locale === 'en' ? '· Difficulty' : '· 难度'} {demo.difficulty}</span><h2>{`${phase === 'investigate' ? copy.courtInvestigate : copy.courtTrial}：${visibleDemo.title}`}</h2><p>{visibleDemo.goal}</p></div><div className="campaign-kpis"><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Collected' : '已取证') : copy.courtPlayerHp}</small><strong>{phase === 'investigate' ? `${discovered.length}` : `${playerHp}/${PLAYER_MAX_HP}`}</strong></span><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Key evidence' : '关键证据') : copy.courtOpponentHp}</small><strong>{phase === 'investigate' ? `${demo.keyEvidenceIds.filter((id) => discovered.includes(id)).length}/${demo.keyEvidenceIds.length}` : `${enemyHp}/${maxEnemyHp}`}</strong></span><span><small>{locale === 'en' ? 'Score' : '总分'}</small><strong>{investigationScore + score}</strong></span></div></div></div>
     <div className="phase-rail"><span className={phase === 'investigate' ? 'active' : 'done'}>1 {copy.courtInvestigate}</span><i>→</i><span className={phase === 'court' ? 'active' : ''}>2 {copy.courtTrial}</span><i>→</i><span className={verdict ? 'active' : ''}>3 {copy.courtVerdict}</span></div>
     <small className="campaign-focus-line">{copy.campaignFocusLabel}{locale === 'en' ? ': ' : '：'}{visibleDemo.focus.join(' · ')}</small>
+    {demo.source && <div className="story-source-strip"><strong>{demo.source.provider}《{demo.source.title}》</strong><span>作者：{demo.source.author} · Work ID {demo.source.workId}</span><small>{demo.source.notice}</small></div>}
     {phase === 'investigate' && error && <p className="error-message" role="alert">{error}</p>}
-    {phase === 'court' ? <CourtArena demo={visibleDemo} onNext={onNext} onInvestigate={returnToInvestigation} hand={courtHand} cardsPlayed={cardsPlayed} battleStage={battle.stage} battleResult={battleResult} playerStamina={playerStamina} playerShield={playerShield} enemyHp={enemyHp} maxEnemyHp={maxEnemyHp} playerHp={playerHp} turn={turn} turnTimer={turnTimer} debate={debate} submitting={submitting} verdict={verdict} error={error} onPlayCard={playCard} onRequestVerdict={requestVerdict} courtEffect={courtEffect} /> : <div className="campaign-layout investigation-layout"><aside className="panel evidence-panel"><PanelHeading eyebrow="EVIDENCE HUB" title={copy.campaignSearchTitle} badge={copy.campaignSearchBadge} /><div className="scene-tabs">{visibleDemo.scenes.map((scene) => <button type="button" className={scene.id === activeScene.id ? 'active' : ''} key={scene.id} onClick={() => setSceneId(scene.id)}>{scene.title}</button>)}</div><div className="scene-board"><span className="scene-label">{activeScene.title}</span><p>{activeScene.description}</p><div className="hotspot-grid">{activeScene.hotspots.map((spot) => <button type="button" className={`hotspot ${discovered.includes(spot.evidenceId) ? 'found' : ''}`} key={spot.id} onClick={() => discoverEvidence(spot.evidenceId, spot.title)}><EvidenceArtwork art={artworkFor(spot.id)} locale={locale} /><strong>{spot.title}</strong><small>{discovered.includes(spot.evidenceId) ? (locale === 'en' ? 'Collected ✓' : '已收集 ✓') : `${locale === 'en' ? 'Explore' : '自由调查'} · ${spot.hint}`}</small></button>)}</div></div><h3 className="subheading">{copy.campaignSearchLog}</h3><div className="investigation-log">{investigationLog.length ? investigationLog.map((item, index) => <span key={`${item}-${index}`}>{item}</span>) : <span>{copy.campaignInvestigateHint}</span>}</div></aside><div className="panel source-panel"><PanelHeading eyebrow="SOURCE READER" title={copy.campaignSourceReader} badge={copy.campaignSourceBadge} /><div className="source-documents"><h3 className="subheading">{copy.campaignSourceTitle}</h3><div className="document-list">{visibleDemo.documents.map((doc) => <button type="button" className={`document-button ${doc.id === documentId ? 'active' : ''}`} key={doc.id} onClick={() => setDocumentId(documentId === doc.id ? '' : doc.id)}><EvidenceArtwork art={artworkFor(doc.id, doc.type)} locale={locale} /><strong>{doc.name}<small>{locale === 'en' ? 'Open full original →' : '打开完整原件 →'}</small></strong></button>)}</div></div><div className="source-reader"><CatDocument doc={activeDocument} playerSide={visibleDemo.playerSide} discovered={discovered} onDiscover={discoverEvidence} locale={locale} /></div></div><aside className="panel evidence-cards-panel"><PanelHeading eyebrow="CASEBOARD" title={copy.campaignEvidenceTitle} badge={interpolate(copy.campaignEvidenceBadge, { selected: selectedEvidence.length, total: HAND_SIZE })} /><div className="evidence-inventory">{discovered.length ? visibleDemo.evidence.filter((item) => discovered.includes(item.id)).map((item) => { const card = evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale); const picked = selectedEvidence.includes(item.id); return <button type="button" className={`evidence-card ${picked ? 'selected' : ''}`} key={item.id} onClick={() => toggleEvidence(item.id)} aria-pressed={picked}><div><strong>{item.title}</strong><span className="evidence-proof" title={item.proofPurpose}>→ {item.proofPurpose}</span></div><p>{item.description}</p><small>{card.nature} · {interpolate(copy.courtEvidenceAccuracy, { score: card.credibility })} · {card.key ? copy.courtEvidenceKey : copy.courtEvidenceSupport} · {picked ? (locale === 'en' ? '✓ Selected · click to remove' : '✓ 已选入庭 · 点击取消选择') : (locale === 'en' ? 'Click to select for trial' : '点击选择带上庭')}</small></button>; }) : <EmptyState text={copy.campaignInvestigateHint} />}</div><div className="court-entry"><p className="chain-tip">{interpolate(copy.campaignCourtEntryHint, { total: HAND_SIZE })}</p><button type="button" className="button primary enter-court" onClick={enterCourt} disabled={!selectedEvidence.length}>{selectedEvidence.length ? interpolate(copy.campaignEnterCourt, { count: selectedEvidence.length }) : copy.campaignChooseEvidence}</button></div></aside></div>}
+    {phase === 'court' ? <CourtArena demo={visibleDemo} onNext={onNext} onInvestigate={returnToInvestigation} hand={courtHand} cardsPlayed={cardsPlayed} battleStage={battle.stage} battleResult={battleResult} playerStamina={playerStamina} playerShield={playerShield} enemyHp={enemyHp} maxEnemyHp={maxEnemyHp} playerHp={playerHp} turn={turn} turnTimer={turnTimer} debate={debate} submitting={submitting} verdict={verdict} error={error} onPlayCard={playCard} onRequestVerdict={requestVerdict} courtEffect={courtEffect} /> : <div className="campaign-layout investigation-layout"><aside className="panel evidence-panel"><PanelHeading eyebrow="EVIDENCE HUB" title={demo.source ? (locale === 'en' ? 'Story scenes' : '故事现场') : copy.campaignSearchTitle} badge={demo.source ? (locale === 'en' ? '6 clues' : '6 条线索') : copy.campaignSearchBadge} /><div className="scene-tabs">{visibleDemo.scenes.map((scene) => <button type="button" className={scene.id === activeScene.id ? 'active' : ''} key={scene.id} onClick={() => setSceneId(scene.id)}>{scene.title}</button>)}</div><div className="scene-board"><span className="scene-label">{activeScene.title}</span><p>{activeScene.description}</p><div className="hotspot-grid">{activeScene.hotspots.map((spot) => <button type="button" className={`hotspot ${discovered.includes(spot.evidenceId) ? 'found' : ''}`} key={spot.id} onClick={() => discoverEvidence(spot.evidenceId, spot.title)}><EvidenceArtwork art={artworkFor(spot.id)} locale={locale} /><strong>{spot.title}</strong><small>{discovered.includes(spot.evidenceId) ? (locale === 'en' ? 'Collected ✓' : '已收集 ✓') : `${locale === 'en' ? 'Explore' : '自由调查'} · ${spot.hint}`}</small></button>)}</div></div><h3 className="subheading">{copy.campaignSearchLog}</h3><div className="investigation-log">{investigationLog.length ? investigationLog.map((item, index) => <span key={`${item}-${index}`}>{item}</span>) : <span>{copy.campaignInvestigateHint}</span>}</div></aside><div className="panel source-panel"><PanelHeading eyebrow="SOURCE READER" title={demo.source ? storyReaderTitle : copy.campaignSourceReader} badge={demo.source ? storyReaderBadge : copy.campaignSourceBadge} /><div className="source-documents"><h3 className="subheading">{demo.source ? (locale === 'en' ? 'Case clues' : '案卷线索') : copy.campaignSourceTitle}</h3><div className="document-list">{visibleDemo.documents.map((doc) => { const rawDocument = demo.documents.find((item) => item.id === doc.id); const verifiedAnchor = demo.source?.mode === 'zhihu-live' && rawDocument?.content.includes('【知乎公开片段 · 原文短引】'); return <button type="button" className={`document-button ${doc.id === documentId ? 'active' : ''}`} key={doc.id} onClick={() => setDocumentId(documentId === doc.id ? '' : doc.id)}><EvidenceArtwork art={artworkFor(doc.id, doc.type)} locale={locale} /><strong>{doc.name}<small>{demo.source ? verifiedAnchor ? (locale === 'en' ? 'View verified quote →' : '查看已核验短引 →') : (locale === 'en' ? 'View curated note →' : '查看策划转述 →') : (locale === 'en' ? 'Open full original →' : '打开完整原件 →')}</small></strong></button>; })}</div></div><div className="source-reader"><CatDocument doc={activeDocument} playerSide={visibleDemo.playerSide} discovered={discovered} onDiscover={discoverEvidence} locale={locale} isStory={Boolean(demo.source)} sourceMode={demo.source?.mode} verifiedStoryQuote={Boolean(demo.source?.mode === 'zhihu-live' && demo.documents.find((item) => item.id === activeDocument.id)?.content.includes('【知乎公开片段 · 原文短引】'))} /></div></div><aside className="panel evidence-cards-panel"><PanelHeading eyebrow="CASEBOARD" title={demo.source ? (locale === 'en' ? 'Evidence hand' : '证据牌组') : copy.campaignEvidenceTitle} badge={interpolate(copy.campaignEvidenceBadge, { selected: selectedEvidence.length, total: HAND_SIZE })} /><div className="evidence-inventory">{discovered.length ? visibleDemo.evidence.filter((item) => discovered.includes(item.id)).map((item) => { const card = evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale); const picked = selectedEvidence.includes(item.id); const courtEligible = isCourtEligible(item.id); return <button type="button" className={`evidence-card ${picked ? 'selected' : ''} ${courtEligible ? '' : 'locked'}`} key={item.id} onClick={() => toggleEvidence(item.id)} aria-pressed={picked} disabled={!courtEligible}><div><strong>{item.title}</strong><span className="evidence-proof" title={item.proofPurpose}>→ {item.proofPurpose}</span></div><p>{item.description}</p><small>{card.nature} · {interpolate(copy.courtEvidenceAccuracy, { score: card.credibility })} · {card.key ? copy.courtEvidenceKey : courtEligible ? copy.courtEvidenceSupport : (locale === 'en' ? 'Background clue' : '背景线索')} · {picked ? (locale === 'en' ? '✓ Selected · click to remove' : '✓ 已选入庭 · 点击取消选择') : courtEligible ? (locale === 'en' ? 'Click to select for trial' : '点击选择带上庭') : (locale === 'en' ? 'Not a hypothesis card' : '不作为方向牌')}</small></button>; }) : <EmptyState text={copy.campaignInvestigateHint} />}</div><div className="court-entry"><p className="chain-tip">{demo.source ? (locale === 'en' ? 'Bring all three key anchors and one evidence card that represents your hypothesis.' : '携带 3 张关键锚点，再选 1 张代表你的推理方向。') : interpolate(copy.campaignCourtEntryHint, { total: HAND_SIZE })}</p><button type="button" className="button primary enter-court" onClick={enterCourt} disabled={!selectedEvidence.length}>{selectedEvidence.length ? (demo.source ? (locale === 'en' ? `Enter challenge with ${selectedEvidence.length}/4 cards →` : `带 ${selectedEvidence.length}/4 张牌进入质证 →`) : interpolate(copy.campaignEnterCourt, { count: selectedEvidence.length })) : copy.campaignChooseEvidence}</button></div></aside></div>}
   </section>;
+}
+
+function StoryBrief({ demo, onStart, onBack }: { demo: DemoCase; onStart: () => void; onBack: () => void }) {
+  const { locale } = useLocale();
+  return <div className="level-brief-overlay story-brief-overlay"><article className="level-brief-card story-brief-card" role="dialog" aria-modal="true" aria-labelledby="story-brief-title">
+    <div className="story-brief-kicker"><span className="brief-stamp">ZHIHU STORY</span><span>{demo.source?.mode === 'zhihu-live' ? (locale === 'en' ? 'LIVE API' : '实时接口') : (locale === 'en' ? 'OFFLINE FALLBACK' : '离线降级')}</span></div>
+    <div className="story-brief-layout">
+      {demo.source?.artwork && <img src={demo.source.artwork} alt={locale === 'en' ? 'Blue Blood cover' : '《蓝血》封面'} />}
+      <div><h2 id="story-brief-title">{demo.title}</h2><p className="story-brief-summary">{demo.summary}</p><p className="story-brief-role">{locale === 'en' ? 'You are Fang Nuo\'s anonymous research partner. Determine whether an objective anomaly explains the evidence better than fatigue, faulty memory, or coincidence.' : '你是方诺的匿名调查协助者。请判断“客观异常”是否比疲劳、误记或巧合更能解释现有证据。'}</p></div>
+    </div>
+    <div className="story-brief-mission"><strong>{locale === 'en' ? 'Your mission' : '本局任务'}</strong><span>{locale === 'en' ? 'Find six clues, bring the three key anchors plus one hypothesis card, then withstand the ordinary explanation.' : '找到 6 条线索，携带 3 张关键锚点和 1 张假说方向牌，进入解释力对决。'}</span></div>
+    <small className="story-attribution">{locale === 'en' ? 'Source' : '内容来源'}：{demo.source?.provider}《{demo.source?.title}》 · {demo.source?.author}<br />{demo.source?.notice}</small>
+    <div className="story-brief-actions"><button type="button" className="button secondary" onClick={onBack}>{locale === 'en' ? 'Back' : '返回故事页'}</button><button type="button" className="button primary" onClick={onStart}>{locale === 'en' ? 'Seal spoilers and investigate →' : '封存后续剧情，开始搜证 →'}</button></div>
+  </article></div>;
+}
+
+function StoryEndingPanel({ demo, verdict, selectedEvidence, onRetry, onFinish }: {
+  demo: DemoCase;
+  verdict: Verdict;
+  selectedEvidence: string[];
+  onRetry: () => void;
+  onFinish: () => void;
+}) {
+  const { locale } = useLocale();
+  const ending = demo.storyEnding!;
+  const suggestedHypothesisId = selectedEvidence.some((id) => id.endsWith('-archive'))
+    ? 'world-shift'
+    : selectedEvidence.some((id) => id.endsWith('-follower'))
+      ? 'controlled-observation'
+      : 'insufficient-evidence';
+  const [hypothesisId, setHypothesisId] = useState('');
+  const [questionId, setQuestionId] = useState('');
+  const [copied, setCopied] = useState(false);
+  const hypothesis = ending.hypotheses.find((item) => item.id === hypothesisId);
+  const question = ending.questions.find((item) => item.id === questionId);
+  const evidenceTitles = demo.evidence.filter((item) => selectedEvidence.includes(item.id)).map((item) => item.title);
+  const sourceUrl = demo.source?.originalUrl || verdict.sources[0]?.url;
+
+  async function copyQuestion() {
+    if (!question) return;
+    try {
+      await navigator.clipboard.writeText(question.question);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return <main className="story-ending-panel">
+    <header className="story-ending-hero">
+      <div><span className="brief-stamp">STAGE VERDICT · {verdict.score}</span><h1>{ending.title}</h1><p>{ending.description}</p></div>
+      <aside><strong>{locale === 'en' ? 'Provisional finding' : '阶段裁决'}</strong><p>{verdict.award}</p></aside>
+    </header>
+
+    <p className="story-ending-rights">{locale === 'en' ? 'Story and characters belong to the original author. This experience uses a public excerpt for interactive reasoning and does not represent the original ending.' : '故事及角色归原作者所有。本体验基于公开片段互动改编，所有结果均不代表原作结局。'}</p>
+
+    <section className="ending-evidence-strip" aria-label={locale === 'en' ? 'Evidence brought into the challenge' : '本局带入质证的证据'}><strong>{locale === 'en' ? 'Your four-card chain' : '你的四卡证据链'}</strong><div>{evidenceTitles.map((title, index) => <span key={title}><b>{index + 1}</b>{title}</span>)}</div></section>
+
+    <section className="ending-step">
+      <div className="ending-step-heading"><span>01</span><div><h2>{locale === 'en' ? 'Which hypothesis now explains the evidence best?' : '现在，哪一种假说最能解释证据？'}</h2><p>{locale === 'en' ? 'Choose a provisional explanation. This does not determine the original story.' : '请选择阶段性解释，它不会决定原作的真相。'}</p></div></div>
+      <div className="hypothesis-grid">{ending.hypotheses.map((item) => <button type="button" className={hypothesisId === item.id ? 'selected' : ''} key={item.id} onClick={() => setHypothesisId(item.id)} aria-pressed={hypothesisId === item.id}><span>{item.id === suggestedHypothesisId ? (locale === 'en' ? 'Suggested by your deck' : '你的牌组更支持') : (locale === 'en' ? 'Alternative' : '备选假说')}</span><strong>{item.title}</strong><p>{item.description}</p></button>)}</div>
+      {hypothesis && <article className="hypothesis-result" aria-live="polite"><div><small>{locale === 'en' ? 'Why it fits' : '当前支持'}</small><p>{hypothesis.support}</p></div><div><small>{locale === 'en' ? 'Strongest gap' : '最大证据缺口'}</small><p>{hypothesis.evidenceGap}</p></div><div><small>{locale === 'en' ? 'Next verification' : '下一步验证'}</small><p>{hypothesis.nextStep}</p></div></article>}
+    </section>
+
+    <section className="ending-step">
+      <div className="ending-step-heading"><span>02</span><div><h2>{locale === 'en' ? 'What should Fang Nuo ask Zhihu?' : '方诺应该如何向知乎求证？'}</h2><p>{locale === 'en' ? 'Balance information gain against the risk of revealing that she noticed the anomaly.' : '在“信息价值”和“暴露风险”之间做选择。'}</p></div></div>
+      <div className="question-grid">{ending.questions.map((item) => <button type="button" className={questionId === item.id ? 'selected' : ''} key={item.id} onClick={() => { setQuestionId(item.id); setCopied(false); }} aria-pressed={questionId === item.id}><span>{item.recommended ? (locale === 'en' ? 'Recommended' : '推荐') : item.title}</span><blockquote>{item.question}</blockquote><div><small>{locale === 'en' ? 'Information' : '信息价值'}<b>{item.informationValue.split('：')[0]}</b></small><small>{locale === 'en' ? 'Exposure' : '暴露风险'}<b>{item.risk.split('：')[0]}</b></small></div></button>)}</div>
+      {question && <article className="question-result" aria-live="polite"><div><strong>{question.title}</strong><p>{question.explanation}</p><small>{locale === 'en' ? 'Limitation' : '局限'}：{question.limitation}</small></div><button type="button" className="button secondary" onClick={copyQuestion}>{copied ? (locale === 'en' ? 'Copied' : '已复制') : (locale === 'en' ? 'Copy question' : '复制问题')}</button></article>}
+    </section>
+
+    <footer className="story-ending-footer"><div><strong>{ending.closing}</strong>{hypothesis && question && <p>{locale === 'en' ? 'Case complete: ' : '本局假说：'}{hypothesis.title} · {locale === 'en' ? 'Question strategy: ' : '求证策略：'}{question.title}</p>}</div><div>{sourceUrl && <a className="button secondary" href={sourceUrl} target="_blank" rel="noreferrer">{locale === 'en' ? 'View source' : '查看原作'}</a>}<button type="button" className="button secondary" onClick={onRetry}>{locale === 'en' ? 'Rebuild deck' : '重新组牌'}</button><button type="button" className="button primary" onClick={onFinish} disabled={!hypothesis || !question}>{locale === 'en' ? 'Seal case and finish' : '封存案卷，完成本局'}</button></div></footer>
+  </main>;
 }
 
 function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShield, battleStage, battleResult, playerStamina, enemyHp, maxEnemyHp, playerHp, turn, turnTimer, debate, submitting, verdict, error, onPlayCard, onRequestVerdict, courtEffect }: {
@@ -719,6 +903,7 @@ function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShie
 }) {
   const { locale } = useLocale();
   const copy = APP_COPY[locale];
+  const storyMode = Boolean(demo.source);
   // The case title is an opening cue, not a permanent overlay. CourtArena mounts
   // when entering the courtroom, so this timer naturally restarts for a new run.
   const [showCourtBench, setShowCourtBench] = useState(true);
@@ -730,14 +915,14 @@ function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShie
   const visibleEffect = courtEffect ? getBattleEffectCopy(courtEffect.label, locale) : '';
   return <div className="court-arena">
     <div className="court-topbar">
-      <div className="court-meter opponent-meter"><span>{copy.courtOpponentHp}</span><strong>{enemyHp}/{maxEnemyHp}</strong><i><b style={{ width: `${maxEnemyHp ? enemyHp / maxEnemyHp * 100 : 0}%` }} /></i></div>
+      <div className="court-meter opponent-meter"><span>{storyMode ? (locale === 'en' ? 'Ordinary explanation' : '日常解释力') : copy.courtOpponentHp}</span><strong>{enemyHp}/{maxEnemyHp}</strong><i><b style={{ width: `${maxEnemyHp ? enemyHp / maxEnemyHp * 100 : 0}%` }} /></i></div>
       <div className="court-round" aria-live="polite"><small>{copy.courtRound} {turn}</small><strong>{battleStage === 'player' && !submitting ? turnTimer : '—'}<em>{copy.courtSeconds}</em></strong><span>{turnLabel}</span></div>
-      <div className="court-meter player-meter"><span>{copy.courtPlayerHp}</span><strong>{playerHp}/{PLAYER_MAX_HP}</strong><i><b style={{ width: `${playerHp / PLAYER_MAX_HP * 100}%` }} /></i><small>{copy.courtStamina} {playerStamina}/{PLAYER_MAX_STAMINA} · {copy.courtShield} {playerShield}/{PLAYER_MAX_SHIELD}</small><div className="court-shield-track" aria-label={interpolate(copy.courtShieldAria, { current: playerShield, max: PLAYER_MAX_SHIELD })}><b style={{ width: `${playerShield / PLAYER_MAX_SHIELD * 100}%` }} /></div></div>
+      <div className="court-meter player-meter"><span>{storyMode ? (locale === 'en' ? 'Argument stability' : '论证稳定度') : copy.courtPlayerHp}</span><strong>{playerHp}/{PLAYER_MAX_HP}</strong><i><b style={{ width: `${playerHp / PLAYER_MAX_HP * 100}%` }} /></i><small>{storyMode ? (locale === 'en' ? 'Focus' : '专注') : copy.courtStamina} {playerStamina}/{PLAYER_MAX_STAMINA} · {storyMode ? (locale === 'en' ? 'Buffer' : '反驳缓冲') : copy.courtShield} {playerShield}/{PLAYER_MAX_SHIELD}</small><div className="court-shield-track" aria-label={interpolate(copy.courtShieldAria, { current: playerShield, max: PLAYER_MAX_SHIELD })}><b style={{ width: `${playerShield / PLAYER_MAX_SHIELD * 100}%` }} /></div></div>
     </div>
     <div className="court-stage">
-      <div className="court-side court-side-opponent"><div className="court-nameplate"><span>{copy.courtTheirSide}</span><strong>{demo.opponentSide}</strong></div><div className={`court-cat court-cat-opponent ${courtEffect?.side === 'opponent' ? 'is-raising' : ''}`}><img src="/assets/court/opponent-cat.webp" alt={copy.courtTheirSide} /></div>{courtEffect?.side === 'opponent' && <div className="objection-bubble">{visibleEffect}</div>}</div>
+      <div className="court-side court-side-opponent"><div className="court-nameplate"><span>{storyMode ? (locale === 'en' ? 'Explanation to challenge' : '待反驳假说') : copy.courtTheirSide}</span><strong>{demo.opponentSide}</strong></div><div className={`court-cat court-cat-opponent ${courtEffect?.side === 'opponent' ? 'is-raising' : ''}`}><img src="/assets/court/opponent-cat.webp" alt={copy.courtTheirSide} /></div>{courtEffect?.side === 'opponent' && <div className="objection-bubble">{visibleEffect}</div>}</div>
       <div className="court-center">{showCourtBench && <div className="court-bench">⚖ <span>{locale === 'en' ? 'Level' : '第'} {demo.levelId} {locale === 'en' ? '·' : '关 ·'} {demo.levelTitle}</span> ⚖</div>}<div className="court-dialogue-list">{debate.slice(-2).map((item, index) => <article key={item.turn?.id || index}>{item.turn?.argument && <div className="court-dialogue is-player"><small>{copy.courtPlayerStatement}</small>{item.turn.argument}</div>}{item.courtTurn === turn && battleStage === 'player-action' ? <div className="court-dialogue court-dialogue-empty">{copy.courtOpponentReplyPending}</div> : <div className="court-dialogue"><small>{copy.courtOpponentReply}</small>{item.response}<small>{copy.courtJudgePrompt} {item.judge}</small></div>}</article>)}{!debate.length && <div className="court-dialogue court-dialogue-empty">{copy.courtNoDebate}</div>}</div>{courtEffect && <div key={`${turn}-${courtEffect.side}`} className={`court-effect-flash ${courtEffect.kind === 'shield' ? 'is-shield' : ''}`}>{visibleEffect}</div>}</div>
-      <div className="court-side court-side-player"><div className="court-nameplate"><span>{copy.courtOurSide}</span><strong>{demo.playerSide}</strong></div><div className={`court-cat court-cat-player ${courtEffect?.side === 'player' ? 'is-raising' : ''}`}><img src="/assets/lawyer-cat-transparent.png" alt={copy.courtOurSide} /></div>{courtEffect?.side === 'player' && <div className="objection-bubble">{visibleEffect}</div>}</div>
+      <div className="court-side court-side-player"><div className="court-nameplate"><span>{storyMode ? (locale === 'en' ? 'Your hypothesis' : '你的主张') : copy.courtOurSide}</span><strong>{demo.playerSide}</strong></div><div className={`court-cat court-cat-player ${courtEffect?.side === 'player' ? 'is-raising' : ''}`}><img src="/assets/lawyer-cat-transparent.png" alt={copy.courtOurSide} /></div>{courtEffect?.side === 'player' && <div className="objection-bubble">{visibleEffect}</div>}</div>
     </div>
       <div className="court-hand-wrap">
       <div className="hand-heading"><span>{interpolate(copy.courtHand, { count: hand.length, total: HAND_SIZE })}</span><strong>{interpolate(copy.courtPlayed, { count: cardsPlayed, stamina: playerStamina, max: PLAYER_MAX_STAMINA })}</strong></div>
@@ -767,13 +952,13 @@ function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShie
     </div>
     <div className="court-footer">
       {battleResult && !verdict && <div className={`battle-result ${battleResult === 'player_win' ? 'is-win' : 'is-loss'}`} role="status">
-        <strong>{battleResult === 'player_win' ? copy.campaignVictory : copy.campaignDefeat}</strong>
-        <p>{battleResult === 'player_win' ? copy.courtBattleResultWin : copy.courtBattleResultLoss}</p>
-        <button type="button" className="button primary" onClick={onRequestVerdict} disabled={submitting}>{submitting ? copy.courtBattleFeedback : copy.campaignRequestVerdict}</button>
+        <strong>{battleResult === 'player_win' ? (storyMode ? (locale === 'en' ? 'The ordinary explanation is broken' : '日常解释已被动摇') : copy.campaignVictory) : (storyMode ? (locale === 'en' ? 'The evidence chain broke' : '证据链未能闭合') : copy.campaignDefeat)}</strong>
+        <p>{storyMode ? battleResult === 'player_win' ? (locale === 'en' ? 'Your evidence chain has made fatigue, faulty memory, and coincidence insufficient on their own.' : '你的证据链已让疲劳、误记与巧合无法单独解释全部异常。') : (locale === 'en' ? 'The ordinary explanation held. Review your card order or use a defensive tactic before trying again.' : '日常解释暂时成立。请调整出牌顺序，或先用防御策略再尝试。') : battleResult === 'player_win' ? copy.courtBattleResultWin : copy.courtBattleResultLoss}</p>
+        <button type="button" className="button primary" onClick={onRequestVerdict} disabled={submitting}>{submitting ? copy.courtBattleFeedback : storyMode ? battleResult === 'player_win' ? (locale === 'en' ? 'Enter provisional inference →' : '进入阶段推演 →') : (locale === 'en' ? 'Review this attempt' : '查看本次分析') : copy.campaignRequestVerdict}</button>
       </div>}
       {error && <p className="error-message court-error" role="alert">{error}</p>}
-      {!battleResult && <div className="court-actions"><small>{copy.courtVerdictLocked}</small><button type="button" className="button verdict-button" disabled>{copy.campaignRequestVerdict}</button></div>}
-      {verdict && <div className="verdict-card"><div className="verdict-header"><span>{verdict.winner}</span><strong>{locale === 'en' ? `${verdict.score} pts` : `${verdict.score} 分`}</strong></div><p>{verdict.award}</p><p>{verdict.reasoning}</p><h4>{copy.courtEvidenceChain}</h4><ol>{verdict.chain.map((item) => <li key={item}>{item}</li>)}</ol><h4>{copy.courtLegalLeads}</h4><ul>{verdict.sources.map((source) => <li key={source.title}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul><p className="disclaimer">{verdict.disclaimer}</p>{verdict.gameResult === 'opponent_win' ? <button type="button" className="button secondary" onClick={onInvestigate}>{copy.campaignReturnRetry}</button> : onNext && <button type="button" className="button primary" onClick={onNext}>{copy.campaignNext}</button>}</div>}
+      {!battleResult && <div className="court-actions"><small>{storyMode ? (locale === 'en' ? 'Reduce the ordinary explanation to zero to enter the final inference.' : '将“日常解释力”降为 0，才能进入阶段推演。') : copy.courtVerdictLocked}</small><button type="button" className="button verdict-button" disabled>{storyMode ? (locale === 'en' ? 'Inference locked' : '阶段推演未解锁') : copy.campaignRequestVerdict}</button></div>}
+      {verdict && <div className="verdict-card"><div className="verdict-header"><span>{verdict.winner}</span><strong>{locale === 'en' ? `${verdict.score} pts` : `${verdict.score} 分`}</strong></div><p>{verdict.award}</p><p>{verdict.reasoning}</p><h4>{copy.courtEvidenceChain}</h4><ol>{verdict.chain.map((item) => <li key={item}>{item}</li>)}</ol><h4>{demo.source ? (locale === 'en' ? 'Content source' : '内容来源') : copy.courtLegalLeads}</h4><ul>{verdict.sources.map((source) => <li key={source.title}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul><p className="disclaimer">{verdict.disclaimer}</p>{verdict.gameResult === 'opponent_win' ? <button type="button" className="button secondary" onClick={onInvestigate}>{copy.campaignReturnRetry}</button> : onNext && <button type="button" className="button primary" onClick={onNext}>{copy.campaignNext}</button>}</div>}
     </div>
   </div>;
 }

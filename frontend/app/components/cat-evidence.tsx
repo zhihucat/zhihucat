@@ -37,6 +37,11 @@ const COPY: Record<Locale, {
   notPhoto: string;
   signatures: string;
   decorative: string;
+  storyVerified: string;
+  storyCurated: string;
+  storyOffline: string;
+  storyOriginal: string;
+  storyCuratedText: string;
   collected: string;
   collect: string;
   plaintiff: string;
@@ -50,6 +55,11 @@ const COPY: Record<Locale, {
     notPhoto: '猫爪签印为主题装饰，非原件签署信息',
     signatures: '甲方 / 乙方',
     decorative: '【虚构训练材料】',
+    storyVerified: '知乎公开片段 · 短引已核验',
+    storyCurated: '策划线索转述 · 锚点未命中',
+    storyOffline: '离线策划转述 · 非原文',
+    storyOriginal: '查看文本与原文锚点',
+    storyCuratedText: '查看策划转述文本',
     collected: '已收集证据 ✓ · 点击取消',
     collect: '点击收集证据',
     plaintiff: '我方',
@@ -63,6 +73,11 @@ const COPY: Record<Locale, {
     notPhoto: 'Paw stamps are decorative and not original signatures',
     signatures: 'Party A / Party B',
     decorative: '[Fictional training material]',
+    storyVerified: 'Zhihu public excerpt · quote verified',
+    storyCurated: 'Curated clue note · anchor not matched',
+    storyOffline: 'Offline curated note · not an original quote',
+    storyOriginal: 'View text and source anchor',
+    storyCuratedText: 'View curated clue text',
     collected: 'Collected ✓ · click to remove',
     collect: 'Click to collect evidence',
     plaintiff: 'Our side',
@@ -144,21 +159,27 @@ function isAgreement(name: string) {
   return /合同|协议|条款|contract|agreement|terms/i.test(name);
 }
 
-export function CatDocument({ doc, playerSide, discovered, onDiscover, locale = 'zh' }: {
+export function CatDocument({ doc, playerSide, discovered, onDiscover, locale = 'zh', isStory = false, sourceMode, verifiedStoryQuote }: {
   doc: EvidenceDocument;
   playerSide: string;
   discovered: string[];
   onDiscover: (evidenceId: string, label: string) => void;
   locale?: Locale;
+  isStory?: boolean;
+  sourceMode?: string;
+  verifiedStoryQuote?: boolean;
 }) {
   const copy = COPY[locale];
+  const storySource = isStory || Boolean(sourceMode);
+  const quoteVerified = verifiedStoryQuote ?? (storySource && sourceMode === 'zhihu-live' && doc.content.includes('【知乎公开片段 · 原文短引】'));
+  const storyProvenance = quoteVerified ? copy.storyVerified : sourceMode === 'zhihu-live' ? copy.storyCurated : copy.storyOffline;
   const art = artworkFor(doc.id, doc.type);
   const lines = contentLines(doc.content);
   const isChat = doc.type === 'chat';
   const isPhoto = doc.type === 'image' || doc.type === 'img';
 
   return <div className={`cat-document ${isChat ? 'document-chat' : ''}`}>
-    <div className="document-art-label"><PawStamp /><span>{copy.archive}</span><em>{copy.decorative}</em></div>
+    <div className="document-art-label"><PawStamp /><span>{copy.archive}</span><em>{storySource ? storyProvenance : copy.decorative}</em></div>
 
     {isChat ? <>
       <div className="cat-chat-heading">
@@ -208,6 +229,6 @@ export function CatDocument({ doc, playerSide, discovered, onDiscover, locale = 
       </button>;
     })}</div>
 
-    <details className="document-plain-text"><summary>{copy.original}</summary><pre>{doc.content}</pre></details>
+    <details className="document-plain-text"><summary>{storySource ? (quoteVerified ? copy.storyOriginal : copy.storyCuratedText) : copy.original}</summary><pre>{doc.content}</pre></details>
   </div>;
 }

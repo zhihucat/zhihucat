@@ -1,11 +1,13 @@
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { URL } = require('node:url');
-const { getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict } = require('./campaign');
+const { getCampaignLevels, getCampaignCase, registerCampaignCase, demoCase, respondToDebate, buildVerdict } = require('./campaign');
+const { createZhihuContentClient } = require('./zhihu-content');
+const { buildBlueBloodCase, getStoryCase, listStoryChoices } = require('./zhihu-story');
 
 const DEFAULT_PORT = 4000;
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
-const API_VERSION = '0.2.1';
+const API_VERSION = '0.3.0';
 
 const LAW_SOURCES = {
   civil509: {
@@ -168,18 +170,35 @@ async function readJson(req) {
 
 function createRequestHandler(options = {}) {
   const configuredCorsOrigin = options.corsOrigin || process.env.CORS_ORIGIN || 'http://localhost:3000';
+  const zhihuClient = options.zhihuClient || createZhihuContentClient();
+  // Every process can handle follow-up debate requests even if another instance served the case detail.
+  registerCampaignCase(buildBlueBloodCase({}, 'curated-fallback'));
   return async function requestHandler(req, res) {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const corsOrigin = resolveCorsOrigin(req.headers.origin, configuredCorsOrigin);
     if (req.method === 'OPTIONS') { json(res, 204, {}, corsOrigin); return; }
     try {
       if (req.method === 'GET' && url.pathname === '/health') { json(res, 200, { status: 'ok', service: 'argus-backend', runtime: 'node', version: API_VERSION, timestamp: new Date().toISOString() }, corsOrigin); return; }
-      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
+      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/zhihu/stories', 'GET /api/zhihu/stories/:id/case', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/cases/draft') { json(res, 201, { data: buildCaseDraft(await readJson(req)) }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/contracts/audit') { json(res, 200, { data: auditContract(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'GET' && url.pathname === '/api/zhihu/stories') {
+        res.setHeader('Cache-Control', 'no-store');
+        json(res, 200, { data: await listStoryChoices(zhihuClient) }, corsOrigin); return;
+      }
+      const storyCaseRoute = url.pathname.match(/^\/api\/zhihu\/stories\/([^/]+)\/case$/);
+      if (req.method === 'GET' && storyCaseRoute) {
+        res.setHeader('Cache-Control', 'no-store');
+        const caseData = await getStoryCase(storyCaseRoute[1], zhihuClient);
+        json(res, 200, { data: registerCampaignCase(caseData) }, corsOrigin); return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/campaign/levels') { json(res, 200, { data: getCampaignLevels() }, corsOrigin); return; }
       const caseRoute = url.pathname.match(/^\/api\/campaign\/cases\/([^/]+)$/);
-      if (req.method === 'GET' && caseRoute) { json(res, 200, { data: getCampaignCase(caseRoute[1]) }, corsOrigin); return; }
+      if (req.method === 'GET' && caseRoute) {
+        const caseData = getCampaignCase(caseRoute[1]);
+        if (caseData.source?.provider === '知乎故事') res.setHeader('Cache-Control', 'no-store');
+        json(res, 200, { data: caseData }, corsOrigin); return;
+      }
       if (req.method === 'GET' && url.pathname === '/api/campaign/demo') { json(res, 200, { data: getCampaignCase() }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/campaign/respond') { json(res, 200, { data: respondToDebate(await readJson(req)) }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/campaign/verdict') { json(res, 200, { data: buildVerdict(await readJson(req)) }, corsOrigin); return; }

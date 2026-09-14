@@ -166,6 +166,28 @@ test('terminal win/loss blocks all later card, timeout and counter actions', () 
   assert.equal(play(lost, lost.hand[0]), lost);
 });
 
+test('story battles cannot finish by repeating one exhibit before the full selected chain is presented', () => {
+  const deck = [1, 2, 3, 4].map((id) => exhibit(id, 0, 10));
+  let state = battleReducer(emptyBattle(10), {
+    type: 'start', deck, selectedIds: deck.map((card) => card.evidenceId),
+    enemyHp: 10, seed: 42, requireAllEvidence: true,
+  });
+  state = play(state, state.hand[0]);
+  assert.equal(state.enemyHp, 1);
+  assert.equal(state.result, null);
+  assert.deepEqual(state.playedEvidenceIds, ['e1']);
+
+  for (const evidenceId of ['e2', 'e3', 'e4']) {
+    state = { ...state, stage: 'player', stamina: PLAYER_MAX_STAMINA };
+    const card = state.hand.find((item) => item.evidenceId === evidenceId);
+    assert.ok(card);
+    state = play(state, card);
+  }
+  assert.equal(state.enemyHp, 0);
+  assert.equal(state.result, 'player_win');
+  assert.deepEqual(new Set(state.playedEvidenceIds), new Set(['e1', 'e2', 'e3', 'e4']));
+});
+
 test('reset and restart clear old hands, resources, outcomes and animation stage', () => {
   const state = next(play(start(), start().hand[0]));
   const reset = battleReducer(state, { type: 'reset', enemyHp: 27 });

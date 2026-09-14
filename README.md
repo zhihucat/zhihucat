@@ -14,9 +14,9 @@ npm install
 npm run dev
 ```
 
-打开 <http://localhost:3000>。前端会通过 `NEXT_PUBLIC_API_BASE_URL` 访问 Node.js 服务；默认值为 `http://localhost:4000`。
+打开 <http://localhost:3000>。前端优先通过 `NEXT_PUBLIC_API_BASE_URL` 访问 Node.js 服务；未配置时请求同源的 `/argus-api`，再由 Next.js 使用 `ARGUS_BACKEND_URL` 转发（默认后端为 `http://localhost:4000`）。
 
-配置 Supabase 后，首次进入法庭闯关会直接弹出注册窗口，只需设置用户名（即昵称）和密码；登录后可在玩家档案中选择预设头像。用户名会在 `player_profiles` 中做不区分大小写查重，玩家档案、胜局分数和排行榜会同步到项目 `tshojzkaojcehjunhbju`。未配置 anon key 时仍保留本机试玩模式。
+配置 Supabase 后，可从右上角玩家入口选择注册或登录；匿名访客也能直接试玩，不会被注册窗口拦截。登录后可在玩家档案中选择预设头像。用户名会在 `player_profiles` 中做不区分大小写查重，玩家档案、胜局分数和排行榜会同步到项目 `tshojzkaojcehjunhbju`。未配置 anon key 时仍保留本机试玩模式。
 
 也可以分别启动：
 
@@ -54,6 +54,8 @@ Vercel 前端使用根路径 `/`，不再需要 GitHub Pages 的 `/ARGUS` `baseP
 - `GET /api`：服务版本和路由清单
 - `POST /api/cases/draft`：根据案件概念生成案件草案
 - `POST /api/contracts/audit`：执行首版规则合同审查
+- `GET /api/zhihu/stories`：实时读取知乎黑客松故事目录，并标记已编排的互动案卷
+- `GET /api/zhihu/stories/:workId/case`：读取故事详情并生成可进入现有搜证/质证流程的案卷
 
 示例：
 
@@ -63,6 +65,20 @@ curl -X POST http://localhost:4000/api/cases/draft \
   -H 'Content-Type: application/json' \
   -d '{"concept":"租客退租后房东扣留押金3000元"}'
 ```
+
+上述黑客松故事接口不需要 Access Secret 或 OAuth。服务端只在请求期间读取官方活动 API，显式返回
+`Cache-Control: no-store`，不会把故事正文写入仓库或持久化。目前唯一完成编排并可完整试玩的案卷
+是《蓝血》（Work ID `2025684191967294692`）；目录中的其他故事只用于展示扩展能力，不会伪装成
+已经可玩的内容。
+
+《蓝血》的单故事流程为：故事入口 → 三场景搜证 → 六选四组牌 → 质证 → 三种假说或“证据不足”
+的阶段判断 → 选择一条向知乎求证的问题 → 封存案卷。所有结论只比较公开片段内的解释力，不续写
+故事，也不代表原作结局。
+
+在线时，故事列表通过 `data.source=zhihu-live`、案卷通过 `data.source.mode=zhihu-live` 标记实时来源；
+上游不可用时两者明确标记为 `curated-fallback`，原文锚点未命中则只显示“策划转述”，不会冒充实时
+原文。案卷中的 `source.originalUrl` 用于打开已核验的知乎原作章节，`source.apiUrl` 仅用于标识本次
+内容接口，两者不会混用。
 
 ## 当前边界
 
