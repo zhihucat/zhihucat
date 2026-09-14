@@ -6,90 +6,74 @@ export type PlayerProfile = {
   avatar: string;
   totalScore: number;
   completedLevels: number;
-  completedLevelIds?: number[]; // Local practice only; never uploaded.
 };
 
-export type LeaderboardEntry = PlayerProfile & { rank: number };
-export type AuthUser = { id: string; email?: string; username?: string };
-export type BattleProof = { ticket: string; actions: Array<string | null> };
+export type LeaderboardEntry = PlayerProfile & {
+  rank: number;
+};
+
+export type AuthUser = Pick<User, 'id' | 'email'> & { username?: string };
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabasePublicKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-export const supabase: SupabaseClient | null = supabaseUrl && supabasePublicKey ? createClient(supabaseUrl, supabasePublicKey) : null;
+
+// The app remains playable without a configured project (for local previews),
+// while production uses the public anon key and RLS policies from supabase/schema.sql.
+export const supabase: SupabaseClient | null = supabaseUrl && supabasePublicKey
+  ? createClient(supabaseUrl, supabasePublicKey)
+  : null;
+
 export const isSupabaseConfigured = Boolean(supabase);
-const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL || '/argus-api').replace(/\/$/, '');
+
 const AUTH_EMAIL_DOMAIN = 'argus.local';
 
-export function normalizeUsername(value: string): string { return value.normalize('NFKC').trim(); }
-
-function legacyUsernameEmail(username: string): string {
-  return 'u-' + [...normalizeUsername(username).toLowerCase()].map((char) => char.codePointAt(0)!.toString(16)).join('-') + '@' + AUTH_EMAIL_DOMAIN;
+export function normalizeUsername(value: string): string {
+  return value.normalize('NFKC').trim();
 }
 
-async function usernameEmail(username: string): Promise<string> {
-  const canonical = normalizeUsername(username).toLowerCase();
-  const legacy = legacyUsernameEmail(username);
-  if (legacy.split('@')[0].length <= 64) return legacy;
-  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
-  return `${Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('')}@${AUTH_EMAIL_DOMAIN}`;
+function escapeIlike(value: string): string {
+  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
+}
+
+function usernameEmail(username: string): string {
+  const normalized = normalizeUsername(username).toLowerCase();
+  const encoded = [...normalized].map((character) => character.codePointAt(0)!.toString(16)).join('-');
+  return `u-${encoded}@${AUTH_EMAIL_DOMAIN}`;
 }
 
 function fromAuthUser(user: User): AuthUser {
   return { id: user.id, email: user.email, username: typeof user.user_metadata?.username === 'string' ? user.user_metadata.username : undefined };
 }
 
-async function getAccessToken(expectedUserId?: string): Promise<string | null> {
+export async function getAuthUser(): Promise<AuthUser | null> {
   if (!supabase) return null;
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  if (expectedUserId && data.session?.user.id !== expectedUserId) throw new Error('账号已切换，请重试');
-  return data.session?.access_token || null;
-}
-
-export async function requestJson<T>(path: string, init: RequestInit = {}, expectedUserId?: string): Promise<T> {
-  const base = new URL(apiBaseUrl + '/', typeof window === 'undefined' ? 'http://localhost' : window.location.origin);
-  const target = new URL(apiBaseUrl + path, base.origin);
-  if (!path.startsWith('/api/') || target.origin !== base.origin || !target.pathname.startsWith(base.pathname + 'api/')) throw new Error('无效的 API 地址');
-  const route = path.split('?')[0];
-  const protectedRoute = ['/api/profile', '/api/campaign/runs', '/api/campaign/battles'].includes(route) || (route === '/api/community/posts' && init.method === 'POST');
-  const token = protectedRoute ? await getAccessToken(expectedUserId) : null;
-  const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type') && init.body) headers.set('Content-Type', 'application/json');
-  headers.delete('Authorization');
-  if (token) headers.set('Authorization', `Bearer ${token}`);
-  const timeout = AbortSignal.timeout(12_000);
-  const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-  const response = await fetch(target, { ...init, credentials: 'omit', redirect: 'error', signal, headers });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message || '请求失败');
-  return (body.data !== undefined ? body.data : body) as T;
+  const { data, error } = await supabase.auth.getUser();
+  if (error || !data.user) return null;
+  return fromAuthUser(data.user);
 }
 
 export async function isUsernameAvailable(username: string): Promise<boolean> {
-  const body = await requestJson<{ available: boolean }>(`/api/auth/username-available?username=${encodeURIComponent(normalizeUsername(username))}`);
-  return body.available;
+  if (!supabase) throw new Error('请先配置 Supabase URL 和 anon key');
+  const { data, error } = await supabase.from('player_profiles').select('id').ilike('name', escapeIlike(normalizeUsername(username))).maybeSingle();
+  if (error) throw error;
+  return !data;
 }
 
 export async function registerAccount(username: string, password: string): Promise<{ user: AuthUser | null; needsEmailConfirmation: boolean }> {
   if (!supabase) throw new Error('请先配置 Supabase URL 和 anon key');
   const cleanUsername = normalizeUsername(username);
-  if (!/^[\p{L}\p{N}_-]{2,20}$/u.test(cleanUsername) || !/^[\p{L}\p{N}_-]{2,20}$/u.test(cleanUsername.toLowerCase())) throw new Error('用户名格式无效');
-  if (password.length < 8 || password.length > 72) throw new Error('密码需要 8 到 72 位');
-  const { data, error } = await supabase.auth.signUp({ email: await usernameEmail(cleanUsername), password, options: { data: { username: cleanUsername } } });
+  const { data, error } = await supabase.auth.signUp({ email: usernameEmail(cleanUsername), password, options: { data: { username: cleanUsername } } });
   if (error) throw error;
-  return { user: data.user ? fromAuthUser(data.user) : null, needsEmailConfirmation: !data.session };
+  return {
+    user: data.user ? fromAuthUser(data.user) : null,
+    needsEmailConfirmation: !data.session,
+  };
 }
 
 export async function loginAccount(username: string, password: string): Promise<AuthUser> {
   if (!supabase) throw new Error('请先配置 Supabase URL 和 anon key');
-  const email = await usernameEmail(username);
-  let result = await supabase.auth.signInWithPassword({ email, password });
-  const legacy = legacyUsernameEmail(username);
-  if (email !== legacy && result.error?.code === 'invalid_credentials') {
-    result = await supabase.auth.signInWithPassword({ email: legacy, password });
-  }
-  const { data, error } = result;
-  if (error || !data.user) throw error || new Error('登录失败，请检查用户名和密码');
+  const { data, error } = await supabase.auth.signInWithPassword({ email: usernameEmail(username), password });
+  if (error || !data.user) throw error || new Error('登录失败，请检查邮箱和密码');
   return fromAuthUser(data.user);
 }
 
@@ -101,21 +85,10 @@ export async function logoutAccount(): Promise<void> {
 
 export function onAuthChange(callback: (user: AuthUser | null) => void): () => void {
   if (!supabase) return () => undefined;
-  let active = true;
-  const timers = new Set<ReturnType<typeof setTimeout>>();
   const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-    // SDK callbacks run under its auth lock; defer any work that calls getSession.
-    const timer = setTimeout(() => {
-      timers.delete(timer);
-      if (active) callback(session?.user ? fromAuthUser(session.user) : null);
-    }, 0);
-    timers.add(timer);
+    callback(session?.user ? fromAuthUser(session.user) : null);
   });
-  return () => {
-    active = false;
-    for (const timer of timers) clearTimeout(timer);
-    data.subscription.unsubscribe();
-  };
+  return () => data.subscription.unsubscribe();
 }
 
 export function getPlayerId(): string {
@@ -123,7 +96,9 @@ export function getPlayerId(): string {
   const key = 'argus-player-id';
   const existing = window.localStorage.getItem(key);
   if (existing) return existing;
-  const id = typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `00000000-0000-4000-8000-${Math.floor(Math.random() * 0xffffffffffff).toString(16).padStart(12, '0')}`;
+  const id = typeof crypto?.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `00000000-0000-4000-8000-${Math.floor(Math.random() * 0xffffffffffff).toString(16).padStart(12, '0')}`;
   window.localStorage.setItem(key, id);
   return id;
 }
@@ -141,32 +116,59 @@ function fromRow(row: Record<string, unknown>): PlayerProfile {
 export async function loadPlayerProfile(id: string): Promise<PlayerProfile | null> {
   if (!id) return null;
   if (!supabase) return readLocalProfile(id);
-  const row = await requestJson<Record<string, unknown> | null>('/api/profile', {}, id);
-  if (row && row.id !== id) throw new Error('账号档案不匹配，请重试');
-  return row ? fromRow(row) : null;
+  const { data, error } = await supabase.from('player_profiles').select('*').eq('id', id).maybeSingle();
+  if (error) {
+    const local = readLocalProfile(id);
+    if (local) return local;
+    throw error;
+  }
+  return data ? fromRow(data) : readLocalProfile(id);
 }
 
-export function loadLocalPlayerProfile(id: string): PlayerProfile | null { return readLocalProfile(id); }
+export function loadLocalPlayerProfile(id: string): PlayerProfile | null {
+  return readLocalProfile(id);
+}
 
 export async function savePlayerProfile(profile: PlayerProfile): Promise<PlayerProfile> {
-  if (!supabase) {
-    if (typeof window !== 'undefined') window.localStorage.setItem(`argus-profile:${profile.id}`, JSON.stringify(profile));
-    return profile;
-  }
-  const row = await requestJson<Record<string, unknown>>('/api/profile', { method: 'PUT', body: JSON.stringify({ avatar: profile.avatar }) }, profile.id);
-  if (row.id !== profile.id) throw new Error('账号档案不匹配，请重试');
-  return fromRow(row);
+  if (typeof window !== 'undefined') window.localStorage.setItem(`argus-profile:${profile.id}`, JSON.stringify(profile));
+  if (!supabase) return profile;
+  const { data, error } = await supabase.from('player_profiles').upsert({
+    id: profile.id,
+    name: profile.name,
+    avatar: profile.avatar,
+    total_score: profile.totalScore,
+    completed_levels: profile.completedLevels,
+  }).select('*').single();
+  if (error) throw error;
+  return data ? fromRow(data) : profile;
 }
 
-export async function saveCampaignRun(proof: BattleProof, playerId: string): Promise<PlayerProfile> {
-  const body = await requestJson<{ profile: Record<string, unknown> }>('/api/campaign/runs', { method: 'POST', body: JSON.stringify(proof) }, playerId);
-  if (body.profile?.id !== playerId) throw new Error('账号档案不匹配，请重试');
-  return fromRow(body.profile);
+export async function saveCampaignRun(input: {
+  playerId: string;
+  levelId: number;
+  score: number;
+  outcome: 'player_win' | 'opponent_win';
+}): Promise<void> {
+  if (!supabase || !input.playerId) return;
+  const { error } = await supabase.from('campaign_runs').insert({
+    player_id: input.playerId,
+    level_id: input.levelId,
+    score: input.score,
+    outcome: input.outcome,
+  });
+  if (error) throw error;
 }
 
 export async function loadLeaderboard(limit = 8): Promise<LeaderboardEntry[]> {
-  const rows = await requestJson<Record<string, unknown>[]>(`/api/leaderboard?limit=${Math.min(50, Math.max(1, limit))}`);
-  return rows.map((row, index) => ({ ...fromRow(row), rank: index + 1 }));
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from('leaderboard')
+    .select('id,name,avatar,total_score,completed_levels')
+    .order('total_score', { ascending: false })
+    .order('completed_levels', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data || []).map((row, index) => ({ ...fromRow(row), rank: index + 1 }));
 }
 
 function readLocalProfile(id: string): PlayerProfile | null {
@@ -174,5 +176,7 @@ function readLocalProfile(id: string): PlayerProfile | null {
   try {
     const raw = window.localStorage.getItem(`argus-profile:${id}`);
     return raw ? JSON.parse(raw) as PlayerProfile : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
