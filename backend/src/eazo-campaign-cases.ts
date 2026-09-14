@@ -1,6 +1,8 @@
 // Imported from /Users/andylyu/Downloads/eazo-project/src/lib/argus/levels.ts (original levels 1-10).
 // IDs are namespaced so these cases cannot share evidence with the native campaign.
-const eazoCampaignCases = [
+import type { CampaignCase } from './types.ts';
+
+export const eazoCampaignCases: CampaignCase[] = [
   {
     "id": "eazo-rental-deposit-001",
     "levelId": 11,
@@ -2502,5 +2504,3 @@ const eazoCampaignCases = [
     }
   }
 ];
-
-module.exports = { eazoCampaignCases };

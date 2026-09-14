@@ -1,4 +1,6 @@
 node_modules
 npm-debug.log
 .env
-*.test.js
+dist
+*.test.ts
+test-helpers.ts

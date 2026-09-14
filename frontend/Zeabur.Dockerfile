@@ -7,6 +7,8 @@ COPY backend/package.json ./backend/package.json
 RUN npm ci
 
 COPY frontend ./frontend
+# Pure battle rules are shared with the backend; no credentials/server modules.
+COPY backend/src/court-battle.mts ./backend/src/court-battle.mts
 
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0

@@ -6,7 +6,7 @@ ARGUS+ 可以与同一台服务器上的其他 tomeet.chat 服务并行运行。
 
 ## 服务器准备
 
-- Node.js 22+ 或 Docker
+- Node.js 22.18+ 或 Docker（后端全部为 TypeScript，生产运行编译后的 ESM）
 - DNS：将 `argus-api.tomeet.chat`（推荐）或 `api.tomeet.chat` 的 A/AAAA 记录指向服务器公网地址
 - 防火墙只开放 80/443；ARGUS+ 只监听本机 `4100`（Docker 容器内部仍使用 `4000`）
 
@@ -15,7 +15,8 @@ ARGUS+ 可以与同一台服务器上的其他 tomeet.chat 服务并行运行。
 ```bash
 cd /opt/argus
 cp backend/.env.example backend/.env
-# 编辑 backend/.env，将 CORS_ORIGIN 改成实际前端域名
+# 编辑 backend/.env，配置 Supabase URL、anon/publishable key、service role key、CAMPAIGN_SIGNING_KEY
+# 将 CORS_ORIGIN 改成实际前端域名，不要在生产使用通配符
 # 例如：CORS_ORIGIN=https://argus.example.com
 
 docker compose -f deploy/docker-compose.backend.yml up -d --build
@@ -26,11 +27,12 @@ curl http://127.0.0.1:4100/health
 
 ```bash
 cd /opt/argus
-npm ci --omit=dev
+npm ci --workspace backend --include-workspace-root=false --include=dev
+npm run build:backend
 PORT=4100 HOST=127.0.0.1 CORS_ORIGIN=https://argus.example.com npm run start:backend
 ```
 
-生产环境可用 systemd/PM2 守护 `npm run start:backend`，并将 `HOST=127.0.0.1`，避免直接暴露 Node 端口。
+构建阶段需要 TypeScript 和 Node 类型开发依赖；运行阶段不需要编译器或第三方包。每次更新源码后应先重新运行 `npm run build:backend`，再重启服务。生产环境可用 systemd/PM2 守护 `npm run start:backend`（实际入口 `backend/dist/server.js`），并将 `HOST=127.0.0.1`，避免直接暴露 Node 端口。Docker 使用多阶段构建，最终镜像只包含后端包信息与编译产物。
 
 ## 方案 A：独立子域名（推荐）
 
@@ -88,7 +90,9 @@ NEXT_PUBLIC_API_BASE_URL=https://api.tomeet.chat/argus
 - `GET /api/community/feed`
 - `POST /api/community/posts`
 
-当前数据保存在进程内存中，服务重启后社区新帖和会话状态会重置。下一阶段接入 PostgreSQL/对象存储时，可沿用现有 JSON API 契约。
+账号由 Supabase Auth 管理，档案和成绩持久化到 Supabase PostgreSQL；部署前先执行 [`supabase/schema.sql`](../supabase/schema.sql)，并完成 [Auth 配置](../README.md#supabase-auth-配置与安全边界)。客户端不能直接写表或排行榜，只允许后端持有 service role key。
+
+社区新帖仍保存在进程内存中，服务重启会清空。`CAMPAIGN_SIGNING_KEY` 未固定时，重启还会使未结算对局的凭证失效；多副本必须使用相同随机密钥。应用限流按连接 IP 计算，反向代理/CDN 应额外按真实客户端 IP 限流，不要让浏览器直连裸 HTTP 后端。
 
 如不使用 Docker，仓库也提供 [`deploy/systemd/argus-api.service`](systemd/argus-api.service)：
 
@@ -100,4 +104,4 @@ sudo systemctl enable --now argus-api
 sudo systemctl status argus-api
 ```
 
-Zeabur 从仓库根目录 `/backend` 构建时使用 [`backend/Zeabur.Dockerfile`](../backend/Zeabur.Dockerfile)。该 Dockerfile 不依赖 monorepo 根目录，适合直接作为 Zeabur 服务的 Dockerfile。
+Zeabur 使用 [`backend/Zeabur.Dockerfile`](../backend/Zeabur.Dockerfile)，**构建上下文须为仓库根目录**（例如 `docker build -f backend/Zeabur.Dockerfile .`）。与 Docker Compose 一样，构建阶段利用根目录 `package-lock.json` 安装后端开发依赖并编译，运行阶段不包含前端或开发依赖。

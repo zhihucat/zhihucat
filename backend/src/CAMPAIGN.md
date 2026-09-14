@@ -15,7 +15,7 @@
 
 ## 数据与接口
 
-`campaign-cases.js` 负责汇总当前工程原有 10 关，`eazo-campaign-cases.js` 保存迁入的 10 关；二者共同组成地图、案件、证据、卡牌话术和裁决内容的数据源。
+`campaign-cases.ts` 负责汇总当前工程原有 10 关，`eazo-campaign-cases.ts` 保存迁入的 10 关；二者共同组成地图、案件、证据、卡牌话术和裁决内容的数据源，并由 `types.ts` 中的 `CampaignCase` 校验结构。
 每份证据具有跨关卡唯一 ID，均可从场景热点或关联原件获得。
 每关关键证据数量不超过 6 个行动点，第 10 关需完整取得 6 份。
 
@@ -23,7 +23,8 @@
 - `GET /api/campaign/cases/:id`：按案件 ID 或关卡数字载入案件，不含预设裁决。
 - `GET /api/campaign/demo`：兼容原来的第 1 关入口。
 - `POST /api/campaign/respond`：提交当前 `caseId`、论点和 `evidenceIds`。
-- `POST /api/campaign/verdict`：提交当前 `caseId`、`evidenceIds` 及必填的 `gameResult`（`player_win` 或 `opponent_win`）。最终裁决的胜负、得分和支持结论由游戏结果决定；证据链只用于解释本局过程，不再决定是否胜诉。
+- `POST /api/campaign/battles`：提交当前 `caseId`、`evidenceIds`，获得绑定本局的签名 `ticket` 与随机 `seed`。
+- `POST /api/campaign/verdict`：提交 `ticket`、`actions`（出牌实例 ID 数组，`null` 表示超时），后端复算得到 `gameResult`（`player_win` 或 `opponent_win`）。不采信客户端胜负或分数；证据链只用于解释本局过程，不决定是否胜诉。
 
 兼容旧客户端省略案件编号时使用第 1 关；显式未知编号返回 404。
 其他案件、虚构或重复证据不能计入当前关卡的得分与关键证据链。
