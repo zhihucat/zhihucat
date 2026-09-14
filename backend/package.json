@@ -4,9 +4,10 @@
   "private": true,
   "description": "Standalone Node.js API for ARGUS+",
   "type": "commonjs",
+  "engines": { "node": ">=22.18.0" },
   "scripts": {
-    "dev": "node --watch src/server.js",
-    "start": "node src/server.js",
+    "dev": "node --env-file-if-exists=.env --watch src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
     "test": "node --test"
   }
 }
