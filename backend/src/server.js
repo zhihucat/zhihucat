@@ -1,14 +1,11 @@
 const http = require('node:http');
 const { randomUUID } = require('node:crypto');
 const { URL } = require('node:url');
-const { createBattle, replayBattle, getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict } = require('./campaign');
-const { bearerToken, httpError, isUsernameAvailable, loadProfile, recordCampaignWin, requireSession, saveProfile, serviceRequest } = require('./auth');
+const { getCampaignLevels, getCampaignCase, demoCase, respondToDebate, buildVerdict } = require('./campaign');
 
 const DEFAULT_PORT = 4000;
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
 const API_VERSION = '0.2.1';
-const requestWindows = new Map();
-let lastWindowSweep = 0;
 
 const LAW_SOURCES = {
   civil509: {
@@ -146,38 +143,13 @@ const communityPosts = [
 
 function resolveCorsOrigin(requestOrigin, configuredOrigin) {
   const allowedOrigins = String(configuredOrigin || '*').split(',').map((origin) => origin.trim()).filter(Boolean);
-  if (!allowedOrigins.length || allowedOrigins.includes('*')) return requestOrigin || '*';
+  if (!allowedOrigins.length || allowedOrigins.includes('*')) return '*';
   if (requestOrigin && allowedOrigins.includes(requestOrigin)) return requestOrigin;
-  return requestOrigin ? '' : allowedOrigins[0];
-}
-
-function assertRequestOrigin(req, configuredOrigin) {
-  const origin = req.headers.origin;
-  if (!origin) return;
-  const allowed = String(configuredOrigin || '').split(',').map((item) => item.trim()).filter(Boolean);
-  if (!allowed.includes('*') && !allowed.includes(origin)) { const error = new Error('请求来源不被允许'); error.statusCode = 403; throw error; }
-}
-
-function limitRequests(req, bucket, max = 120) {
-  const key = `${bucket}:${req.socket.remoteAddress || 'unknown'}`;
-  const now = Date.now();
-  if (now - lastWindowSweep >= 60_000) {
-    for (const [entry, value] of requestWindows) if (value.expiresAt <= now) requestWindows.delete(entry);
-    lastWindowSweep = now;
-  }
-  const previous = requestWindows.get(key);
-  const current = previous?.expiresAt > now ? previous : { count: 0, expiresAt: now + 60_000 };
-  if (current.count >= max || (!requestWindows.has(key) && requestWindows.size >= 10_000)) throw httpError(429, '请求过于频繁，请稍后再试');
-  current.count += 1;
-  requestWindows.set(key, current);
-}
-
-function ensureStringSize(value, name, max) {
-  if (String(value || '').length > max) { const error = new Error(`${name} 过长`); error.statusCode = 400; throw error; }
+  return allowedOrigins[0];
 }
 
 function json(res, statusCode, payload, corsOrigin) {
-  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8', ...(corsOrigin ? { 'Access-Control-Allow-Origin': corsOrigin } : {}), 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', Vary: 'Origin' });
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': corsOrigin, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', Vary: 'Origin' });
   if (statusCode === 204) { res.end(); return; }
   res.end(JSON.stringify(payload));
 }
@@ -185,96 +157,50 @@ function json(res, statusCode, payload, corsOrigin) {
 async function readJson(req) {
   const chunks = [];
   let size = 0;
-  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+  for await (const chunk of req) {
     size += chunk.length;
     if (size > MAX_BODY_BYTES) { const error = new Error('请求体超过 3MB'); error.statusCode = 413; throw error; }
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
-  try {
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error();
-    return body;
-  } catch { throw httpError(400, '请求体必须是有效 JSON 对象'); }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { const error = new Error('请求体必须是有效 JSON'); error.statusCode = 400; throw error; }
 }
 
 function createRequestHandler(options = {}) {
   const configuredCorsOrigin = options.corsOrigin || process.env.CORS_ORIGIN || 'http://localhost:3000';
   return async function requestHandler(req, res) {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const corsOrigin = resolveCorsOrigin(req.headers.origin, configuredCorsOrigin);
+    if (req.method === 'OPTIONS') { json(res, 204, {}, corsOrigin); return; }
     try {
-      let url;
-      try { url = new URL(req.url || '/', 'http://localhost'); } catch { throw httpError(400, '请求地址无效'); }
-      assertRequestOrigin(req, configuredCorsOrigin);
-      if (req.method === 'OPTIONS') { json(res, 204, {}, corsOrigin); return; }
-      if (url.pathname.startsWith('/api/')) limitRequests(req, 'api', 600);
       if (req.method === 'GET' && url.pathname === '/health') { json(res, 200, { status: 'ok', service: 'argus-backend', runtime: 'node', version: API_VERSION, timestamp: new Date().toISOString() }, corsOrigin); return; }
-      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'GET /api/auth/username-available', 'GET /api/profile', 'PUT /api/profile', 'POST /api/campaign/battles', 'POST /api/campaign/runs', 'GET /api/leaderboard', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
-      if (req.method === 'GET' && url.pathname === '/api/auth/username-available') { limitRequests(req, 'username', 30); json(res, 200, { data: { available: await isUsernameAvailable(url.searchParams.get('username')) } }, corsOrigin); return; }
-      if ((req.method === 'GET' || req.method === 'PUT') && url.pathname === '/api/profile') {
-        const session = await requireSession(req);
-        if (req.method === 'GET') {
-          const profile = await loadProfile(session);
-          json(res, 200, { data: profile }, corsOrigin); return;
-        }
-        const body = await readJson(req);
-        const saved = await saveProfile(session, { avatar: body.avatar });
-        json(res, 200, { data: saved }, corsOrigin); return;
-      }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/battles') {
-        limitRequests(req, 'battle-start', 30);
-        const session = bearerToken(req) ? await requireSession(req) : null;
-        json(res, 201, { data: createBattle(await readJson(req), session?.profileId || null) }, corsOrigin); return;
-      }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/runs') {
-        const session = await requireSession(req);
-        const body = await readJson(req);
-        const verdict = replayBattle(body, session.profileId);
-        if (verdict.gameResult !== 'player_win') throw httpError(400, '只有获胜对局可以计分');
-        const score = verdict.score;
-        const saved = await recordCampaignWin(session, verdict.levelId, score);
-        json(res, 201, { data: { score, verdict, profile: saved } }, corsOrigin); return;
-      }
-      if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
-        const requested = Number(url.searchParams.get('limit') || 8);
-        const limit = Number.isFinite(requested) ? Math.min(50, Math.max(1, Math.floor(requested))) : 8;
-        const rows = await serviceRequest(`/rest/v1/leaderboard?select=id,name,avatar,total_score,completed_levels&order=total_score.desc,completed_levels.desc&limit=${limit}`);
-        json(res, 200, { data: rows }, corsOrigin); return;
-      }
-      if (req.method === 'POST' && url.pathname === '/api/cases/draft') { limitRequests(req, 'case'); const body = await readJson(req); ensureStringSize(body.concept, 'concept', 5000); json(res, 201, { data: buildCaseDraft(body) }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/contracts/audit') { limitRequests(req, 'audit'); const body = await readJson(req); ensureStringSize(body.text, 'text', 200000); json(res, 200, { data: auditContract(body) }, corsOrigin); return; }
+      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/cases/draft') { json(res, 201, { data: buildCaseDraft(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/contracts/audit') { json(res, 200, { data: auditContract(await readJson(req)) }, corsOrigin); return; }
       if (req.method === 'GET' && url.pathname === '/api/campaign/levels') { json(res, 200, { data: getCampaignLevels() }, corsOrigin); return; }
       const caseRoute = url.pathname.match(/^\/api\/campaign\/cases\/([^/]+)$/);
       if (req.method === 'GET' && caseRoute) { json(res, 200, { data: getCampaignCase(caseRoute[1]) }, corsOrigin); return; }
       if (req.method === 'GET' && url.pathname === '/api/campaign/demo') { json(res, 200, { data: getCampaignCase() }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/respond') { limitRequests(req, 'campaign'); json(res, 200, { data: respondToDebate(await readJson(req)) }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/verdict') { limitRequests(req, 'verdict'); json(res, 200, { data: replayBattle(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/respond') { json(res, 200, { data: respondToDebate(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/verdict') { json(res, 200, { data: buildVerdict(await readJson(req)) }, corsOrigin); return; }
       if (req.method === 'GET' && url.pathname === '/api/community/feed') { json(res, 200, { data: { posts: communityPosts } }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/community/posts') {
         const body = await readJson(req);
         const title = String(body.title || '').trim();
         const postBody = String(body.body || '').trim();
-        ensureStringSize(title, 'title', 200); ensureStringSize(postBody, 'body', 5000);
         if (!title || !postBody) { const error = new Error('title 和 body 不能为空'); error.statusCode = 400; throw error; }
-        const session = await requireSession(req);
-        limitRequests(req, 'community', 10);
-        const profile = await loadProfile(session);
-        const post = { id: randomUUID(), author: profile.name, time: '刚刚', title, body: postBody, tags: Array.isArray(body.tags) ? body.tags.filter((tag) => typeof tag === 'string' && tag.length <= 30).slice(0, 5) : ['#新分享'], likes: 0, comments: 0 };
-        communityPosts.unshift(post); communityPosts.length = Math.min(communityPosts.length, 200);
-        json(res, 201, { data: post }, corsOrigin); return;
+        const post = { id: randomUUID(), author: String(body.author || '匿名律师猫'), time: '刚刚', title, body: postBody, tags: Array.isArray(body.tags) ? body.tags.slice(0, 5) : ['#新分享'], likes: 0, comments: 0 };
+        communityPosts.unshift(post); json(res, 201, { data: post }, corsOrigin); return;
       }
       json(res, 404, { error: { message: '路由不存在' } }, corsOrigin);
     } catch (error) {
-      if (!req.complete) req.resume();
       const statusCode = Number(error.statusCode) || 500;
       json(res, statusCode, { error: { message: statusCode === 500 ? '服务器内部错误' : error.message } }, corsOrigin);
     }
   };
 }
 
-function createServer(options = {}) {
-  return http.createServer({ requestTimeout: 30_000, headersTimeout: 15_000, maxHeaderSize: 16_384 }, createRequestHandler(options));
-}
+function createServer(options = {}) { return http.createServer(createRequestHandler(options)); }
 
 if (require.main === module) {
   const port = Number(process.env.PORT) || DEFAULT_PORT;

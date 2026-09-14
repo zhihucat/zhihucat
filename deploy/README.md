@@ -6,7 +6,7 @@ ARGUS+ 可以与同一台服务器上的其他 tomeet.chat 服务并行运行。
 
 ## 服务器准备
 
-- Node.js 22.18+ 或 Docker（共用战斗规则使用 Node 原生类型擦除）
+- Node.js 22+ 或 Docker
 - DNS：将 `argus-api.tomeet.chat`（推荐）或 `api.tomeet.chat` 的 A/AAAA 记录指向服务器公网地址
 - 防火墙只开放 80/443；ARGUS+ 只监听本机 `4100`（Docker 容器内部仍使用 `4000`）
 
@@ -15,8 +15,7 @@ ARGUS+ 可以与同一台服务器上的其他 tomeet.chat 服务并行运行。
 ```bash
 cd /opt/argus
 cp backend/.env.example backend/.env
-# 编辑 backend/.env，配置 Supabase URL、anon/publishable key、service role key、CAMPAIGN_SIGNING_KEY
-# 将 CORS_ORIGIN 改成实际前端域名，不要在生产使用通配符
+# 编辑 backend/.env，将 CORS_ORIGIN 改成实际前端域名
 # 例如：CORS_ORIGIN=https://argus.example.com
 
 docker compose -f deploy/docker-compose.backend.yml up -d --build
@@ -89,9 +88,7 @@ NEXT_PUBLIC_API_BASE_URL=https://api.tomeet.chat/argus
 - `GET /api/community/feed`
 - `POST /api/community/posts`
 
-账号由 Supabase Auth 管理，档案和成绩持久化到 Supabase PostgreSQL；部署前先执行 [`supabase/schema.sql`](../supabase/schema.sql)，并完成 [Auth 配置](../README.md#supabase-auth-配置与安全边界)。客户端不能直接写表或排行榜，只允许后端持有 service role key。
-
-社区新帖仍保存在进程内存中，服务重启会清空。`CAMPAIGN_SIGNING_KEY` 未固定时，重启还会使未结算对局的凭证失效；多副本必须使用相同随机密钥。应用限流按连接 IP 计算，反向代理/CDN 应额外按真实客户端 IP 限流，不要让浏览器直连裸 HTTP 后端。
+当前数据保存在进程内存中，服务重启后社区新帖和会话状态会重置。下一阶段接入 PostgreSQL/对象存储时，可沿用现有 JSON API 契约。
 
 如不使用 Docker，仓库也提供 [`deploy/systemd/argus-api.service`](systemd/argus-api.service)：
 

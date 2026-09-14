@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { buildVerdict, createServer } = require('./server');
+const { createServer } = require('./server');
 
 async function withServer(run) {
   const server = createServer({ corsOrigin: '*' });
@@ -83,7 +83,7 @@ test('invalid JSON returns a 400 response', async () => {
     const body = await response.json();
 
     assert.equal(response.status, 400);
-    assert.equal(body.error.message, '请求体必须是有效 JSON 对象');
+    assert.equal(body.error.message, '请求体必须是有效 JSON');
   });
 });
 
@@ -138,7 +138,7 @@ test('POST /api/campaign/respond changes response based on evidence actually sub
   });
 });
 
-test('POST /api/campaign/verdict rejects client-asserted wins without a signed replay', async () => {
+test('POST /api/campaign/verdict returns the explainable evidence-chain result', async () => {
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/campaign/verdict`, {
       method: 'POST',
@@ -147,8 +147,12 @@ test('POST /api/campaign/verdict rejects client-asserted wins without a signed r
     });
     const body = await response.json();
 
-    assert.equal(response.status, 400);
-    assert.ok(body.error.message);
+    assert.equal(response.status, 200);
+    assert.equal(body.data.status, 'player_win');
+    assert.equal(body.data.gameResult, 'player_win');
+    assert.equal(body.data.score, 88);
+    assert.equal(body.data.chain.length, 4);
+    assert.ok(body.data.sources.length >= 1);
   });
 });
 
@@ -208,7 +212,7 @@ test('all twenty native and EAZO levels have distinct, complete and reachable ca
   });
 });
 
-test('all twenty debate APIs and internal verdict templates stay scoped to their case', async () => {
+test('each of the twenty levels completes its own debate and verdict, and verdict follows the game result', async () => {
   await withServer(async (baseUrl) => {
     for (let levelId = 1; levelId <= 20; levelId += 1) {
       const { data: caseData } = await (await fetch(`${baseUrl}/api/campaign/cases/${levelId}`)).json();
@@ -222,7 +226,8 @@ test('all twenty debate APIs and internal verdict templates stay scoped to their
         assert.ok(body.data.scoreChange > 10);
         if (levelId > 1 && levelId !== 11) assert.doesNotMatch(body.data.response + body.data.judge, rentalCaseLeakPattern);
       }
-      const body = { data: buildVerdict(payload) };
+      const { response, body } = await postCampaign(baseUrl, 'verdict', payload);
+      assert.equal(response.status, 200);
       assert.equal(body.data.caseId, caseData.id);
       assert.equal(body.data.status, 'player_win');
       assert.equal(body.data.gameResult, 'player_win');
@@ -235,7 +240,7 @@ test('all twenty debate APIs and internal verdict templates stay scoped to their
           : 'https://flk.npc.gov.cn/', source.title);
       }
       if (levelId > 1 && levelId !== 11) assert.doesNotMatch(JSON.stringify(body.data), rentalCaseLeakPattern);
-      const partial = { data: buildVerdict({ ...payload, evidenceIds: caseData.keyEvidenceIds.slice(1) }) };
+      const { body: partial } = await postCampaign(baseUrl, 'verdict', { ...payload, evidenceIds: caseData.keyEvidenceIds.slice(1) });
       assert.equal(partial.data.status, 'player_win');
       assert.equal(partial.data.gameResult, 'player_win');
       assert.equal(partial.data.score, body.data.score);
@@ -250,7 +255,7 @@ test('unknown levels fail explicitly instead of silently loading the rental demo
   await withServer(async (baseUrl) => {
     for (const identifier of ['0', '21', 'unknown-case', 'toString']) {
       assert.equal((await fetch(`${baseUrl}/api/campaign/cases/${identifier}`)).status, 404);
-      for (const route of ['respond', 'battles']) {
+      for (const route of ['respond', 'verdict']) {
         const { response } = await postCampaign(baseUrl, route, { caseId: identifier, argument: '本案证据', evidenceIds: ['ev-contract'] });
         assert.equal(response.status, 404);
       }
@@ -267,7 +272,7 @@ test('foreign, fabricated and duplicate evidence cannot complete or inflate anot
     const { body: debate } = await postCampaign(baseUrl, 'respond', input);
     assert.deepEqual(debate.data.turn.evidenceIds, []);
     assert.ok(debate.data.scoreChange < 0);
-    const verdict = { data: buildVerdict(input) };
+    const { body: verdict } = await postCampaign(baseUrl, 'verdict', input);
     assert.equal(verdict.data.status, 'opponent_win');
     assert.equal(verdict.data.score, 0);
     assert.equal(verdict.data.gameResult, 'opponent_win');
@@ -279,16 +284,17 @@ test('foreign, fabricated and duplicate evidence cannot complete or inflate anot
   });
 });
 
-test('internal verdict formatting follows the validated battle outcome, not evidence completeness', async () => {
+test('verdict requires an explicit game result and never infers the outcome from evidence', async () => {
   await withServer(async (baseUrl) => {
     const { data: caseData } = await (await fetch(`${baseUrl}/api/campaign/cases/1`)).json();
     const completeEvidence = caseData.keyEvidenceIds;
     const missingEvidence = completeEvidence.slice(0, 1);
 
-    assert.throws(() => buildVerdict({ caseId: caseData.id, evidenceIds: completeEvidence }), { statusCode: 400 });
+    const missingResult = await postCampaign(baseUrl, 'verdict', { caseId: caseData.id, evidenceIds: completeEvidence });
+    assert.equal(missingResult.response.status, 400);
 
-    const playerWon = { body: { data: buildVerdict({ caseId: caseData.id, evidenceIds: missingEvidence, gameResult: 'player_win' }) } };
-    const opponentWon = { body: { data: buildVerdict({ caseId: caseData.id, evidenceIds: completeEvidence, gameResult: 'opponent_win' }) } };
+    const playerWon = await postCampaign(baseUrl, 'verdict', { caseId: caseData.id, evidenceIds: missingEvidence, gameResult: 'player_win' });
+    const opponentWon = await postCampaign(baseUrl, 'verdict', { caseId: caseData.id, evidenceIds: completeEvidence, gameResult: 'opponent_win' });
     assert.equal(playerWon.body.data.gameResult, 'player_win');
     assert.equal(playerWon.body.data.status, 'player_win');
     assert.equal(playerWon.body.data.winner.includes(caseData.playerSide), true);

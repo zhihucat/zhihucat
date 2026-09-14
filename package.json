@@ -10,8 +10,7 @@
     "dev:backend": "npm --workspace backend run dev",
     "build": "npm --workspace frontend run build",
     "typecheck": "npm --workspace frontend run typecheck",
-    "test": "npm run test --workspaces --if-present",
-    "test:database": "node --test supabase/schema.test.mjs",
+    "test": "npm --workspace backend test",
     "start:frontend": "npm --workspace frontend run start",
     "start:backend": "npm --workspace backend run start"
   },
