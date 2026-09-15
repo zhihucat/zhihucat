@@ -34,7 +34,11 @@ PALE_RED = "FCEAEA"
 GRAY = "625C53"
 WHITE = "FFFFFF"
 
-BODY_FONT = "Hiragino Sans GB"
+# LibreOffice's headless macOS renderer can enumerate Hiragino Sans GB but
+# currently emits missing-glyph boxes for it. Arial Unicode MS is installed on
+# the same system, covers simplified Chinese, and renders consistently in both
+# LibreOffice and Microsoft Word.
+BODY_FONT = "Arial Unicode MS"
 MONO_FONT = "Arial"
 
 

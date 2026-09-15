@@ -7,6 +7,7 @@ backend/dist/
 .env.local
 .vercel/
 __pycache__/
+~$*.docx
 .DS_Store
 
 # Local/generated verification artifacts
