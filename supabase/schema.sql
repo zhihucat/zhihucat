@@ -108,7 +108,7 @@ set search_path = ''
 as $$
 declare result public.player_profiles;
 begin
-  if p_score is null or p_score <> 88 or p_level_id is null or p_level_id < 1 or p_level_id > 20 then
+  if p_score is null or p_score <> 88 or p_level_id is null or p_level_id < 1 or p_level_id > 99 then
     raise exception 'invalid campaign result';
   end if;
   select * into result from public.player_profiles where id = p_player_id for update;

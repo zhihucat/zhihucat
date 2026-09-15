@@ -136,7 +136,6 @@ export default function HomePage() {
   const [profileError, setProfileError] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
-  const [entryAuthDismissed, setEntryAuthDismissed] = useState(false);
   const [profileRetry, setProfileRetry] = useState(0);
   const authIdentityRef = useRef<string | null>(null);
   const profileRevisionRef = useRef(0);
@@ -233,7 +232,6 @@ export default function HomePage() {
     // The auth subscription is the sole owner of hydration and identity changes.
     setAuthOpen(false);
     setProfileOpen(false);
-    setEntryAuthDismissed(true);
   }
 
   async function handleLogout() {
@@ -245,7 +243,6 @@ export default function HomePage() {
       setPlayerId('');
       setPlayerProfile(null);
       setProfileOpen(false);
-      setEntryAuthDismissed(true);
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : APP_COPY[locale].logoutError);
     }
@@ -331,7 +328,7 @@ export default function HomePage() {
         </div>
         {profileError && <p className="profile-sync-note" role="status">{profileError}{authUser && !playerProfile && <button type="button" onClick={() => setProfileRetry((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重新加载档案'}</button>}</p>}
         {!profileLoading && !authOpen && profileOpen && <ProfileModal profile={playerProfile} authenticated={Boolean(authUser)} onSave={handleSaveProfile} onClose={() => setProfileOpen(false)} onAuthRequest={openAuthModal} />}
-        {(!entryAuthDismissed && !profileLoading && isSupabaseConfigured && !authUser && !playerProfile) || authOpen ? <AuthModal onClose={() => { setAuthOpen(false); setEntryAuthDismissed(true); }} onSuccess={handleAuthSuccess} /> : null}
+        {authOpen ? <AuthModal onClose={() => setAuthOpen(false)} onSuccess={handleAuthSuccess} /> : null}
       </main>
     </LocaleContext.Provider>
   );

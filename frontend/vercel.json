@@ -4,7 +4,7 @@
   "rewrites": [
     {
       "source": "/argus-api/:path*",
-      "destination": "https://argus-api.tomeet.chat/:path*"
+      "destination": "https://zhihucat-api.vercel.app/:path*"
     }
   ]
 }

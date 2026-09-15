@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/index.js": {
+      "includeFiles": "dist/**"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/index?__path=/health"
+    },
+    {
+      "source": "/api",
+      "destination": "/api/index?__path=/api"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index?__path=/api/:path*"
+    }
+  ]
+}

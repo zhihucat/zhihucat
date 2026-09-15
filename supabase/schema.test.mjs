@@ -75,10 +75,10 @@ test('Supabase schema: safe upgrade, privileges, initialization and concurrent s
   await t.test('concurrent wins and avatar edits award once without losing increments', async () => {
     await Promise.all(Array.from({ length: 20 }, (_, index) => query(index % 2
       ? `set role service_role; select public.save_player_profile('${owner}','Cat','${avatar}');`
-      : `set role service_role; select public.record_campaign_win('${owner}',1,88);`)));
+      : `set role service_role; select public.record_campaign_win('${owner}',91,88);`)));
     assert.equal(sql(`select total_score || ':' || completed_levels from public.player_profiles where id = '${owner}'`), '88:1');
     assert.equal(sql(`select count(*) from public.campaign_runs where player_id = '${owner}'`), '1');
-    sql(`set role service_role; select public.record_campaign_win('${owner}',1,88);`);
+    sql(`set role service_role; select public.record_campaign_win('${owner}',91,88);`);
     assert.equal(sql(`select total_score from public.player_profiles where id = '${owner}'`), '88');
     assert.throws(() => sql(`set role service_role; select public.record_campaign_win('${owner}',2,999999);`));
     assert.equal(sql(`select count(*) from public.campaign_runs where player_id = '${owner}'`), '1');

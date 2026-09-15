@@ -5,6 +5,8 @@ backend/dist/
 *.tsbuildinfo
 .env
 .env.local
+.vercel/
+__pycache__/
 .DS_Store
 
 # Local/generated verification artifacts

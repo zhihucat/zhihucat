@@ -70,21 +70,21 @@ npm run start:backend      # 运行 backend/dist/server.js，并读取 backend/.
 
 `npm run dev:backend` 直接监听 TypeScript 源码，不需要预构建；类型检查仍需运行 `npm run typecheck`。`backend/dist/` 为生成目录，不提交到 Git；后端编译会将 `.ts` / `.mts` 导入分别改写为 `.js` / `.mjs`，不将测试打入生产产物。
 
-## Vercel + 独立 Node.js 部署
+## Vercel 部署
 
-前端目标平台为 Vercel，后端保持为独立 Node.js 服务。当前仓库是 monorepo，创建 Vercel
-项目时将 **Root Directory** 设置为 `frontend/`，框架选择 Next.js，构建命令使用默认的
-`next build`。配置文件位于 `frontend/vercel.json`。
+线上 Demo 使用两个 Vercel 项目：前端 Root Directory 为 `frontend/`，后端 Root Directory
+为 `backend/`。前端通过同源 `/argus-api` 转发至后端，配置分别位于
+`frontend/vercel.json` 与 `backend/vercel.json`。
 
 部署步骤：
 
 1. 将仓库导入 Vercel，Root Directory 选择 `frontend/`；前端包可独立完成生产构建。
-2. 在 Vercel 的 Production、Preview 环境分别配置 `NEXT_PUBLIC_API_BASE_URL`，生产值使用 `https://argus-api.tomeet.chat`。
+2. 前端保持 `NEXT_PUBLIC_API_BASE_URL=/argus-api`，由 Vercel 重写访问后端，避免浏览器跨域依赖。
 3. 按上述发布窗口要求安排 [`supabase/schema.sql`](supabase/schema.sql)，不要在旧版仍提供写入时单独执行。
 4. 在后端配置 `SUPABASE_URL`、`SUPABASE_SERVICE_ROLE_KEY` 和 `SUPABASE_ANON_KEY`。service role key 只能放在后端 Secret，不能配置为 `NEXT_PUBLIC_*`。
 5. 前端配置 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`（或旧名称 `NEXT_PUBLIC_SUPABASE_ANON_KEY`）以及 `NEXT_PUBLIC_API_BASE_URL`，并完成上面的 Auth 配置。环境变量变更后需重新构建前端。
-6. 将 `backend/` 部署到支持常驻 Node.js 进程的平台（例如 Render、Railway、Fly.io 或自有服务器）。
-7. 在后端配置 `CORS_ORIGIN`。多个 Vercel 生产/预览域名用英文逗号分隔，例如：
+6. 将 `backend/` 部署为独立 Vercel 项目；也可使用 Render、Railway、Fly.io 或自有 Node.js 服务器。
+7. 若前端改为直连后端，则在后端配置 `CORS_ORIGIN`。多个生产/预览域名用英文逗号分隔，例如：
 
    ```env
    CORS_ORIGIN=https://argus.vercel.app,https://argus-git-main-988ms.vercel.app
@@ -92,6 +92,8 @@ npm run start:backend      # 运行 backend/dist/server.js，并读取 backend/.
 
 Vercel 前端使用根路径 `/`，不再需要 GitHub Pages 的 `/ARGUS` `basePath` 和静态导出。
 每个 Pull Request 可以自动生成 Preview，前端 API 地址通过 Vercel 环境变量在构建时注入。
+
+当前生产体验地址：<https://zhihucat-six.vercel.app/campaign>。
 
 ## API
 
