@@ -309,6 +309,12 @@ export default function HomePage() {
               </g>
             </svg>
           </button>
+          <nav className="blueblood-global-nav" aria-label={locale === 'en' ? 'Blue Blood navigation' : '蓝血实验导航'}>
+            <a href="#blueblood-home"><span>{locale === 'en' ? 'Home' : '首页'}</span><small>HOME</small></a>
+            <a href="#kanshan-overview"><span>{locale === 'en' ? 'World' : '世界观'}</span><small>WORLD</small></a>
+            <a href="#game-flow"><span>{locale === 'en' ? 'Guide' : '游戏指南'}</span><small>GUIDE</small></a>
+            <a href="#blueblood-archive"><span>{locale === 'en' ? 'Archive' : '影像回廊'}</span><small>ARCHIVE</small></a>
+          </nav>
           <div className="player-header-actions">
             <div className="locale-switch" role="tablist" aria-label="Language switch">
               <button type="button" role="tab" aria-selected={locale === 'zh'} className={locale === 'zh' ? 'active' : ''} onClick={() => setLocale('zh')}>{APP_COPY.zh.localeZh}</button>
@@ -447,12 +453,12 @@ function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: 
   const featuredStory = storyFeed?.stories.find((story) => story.playable);
   if (!featuredStory) return <section className="panel loading-panel"><p className="error-message">{locale === 'en' ? 'The featured story is unavailable.' : '今日互动案卷暂不可用，请稍后重试。'}</p><button type="button" className="button primary" onClick={() => setRetry((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重新加载'}</button></section>;
   const finishedScore = completed[featuredStory.caseId];
-  return <section className="campaign-shell blueblood-home" aria-label={locale === 'en' ? 'Blue Blood interactive story' : '《蓝血》互动故事'}>
+  return <section id="blueblood-home" className="campaign-shell blueblood-home" aria-label={locale === 'en' ? 'Blue Blood interactive story' : '《蓝血》互动故事'}>
     <header className="blueblood-home-header">
       <div><span className="eyebrow">ZHIHU STORY · INTERACTIVE CASE</span><h1>{locale === 'en' ? 'Blue Blood: Which world is wrong?' : '蓝血疑云：谁的世界出了错？'}</h1><p>{locale === 'en' ? 'Return to the public excerpt, collect verifiable clues, and defend the strongest explanation without inventing the original ending.' : '回到知乎公开片段取证。不要猜作者的结局，只判断哪一种解释最经得起质证。'}</p></div>
       <div className="blueblood-live-status"><span className={`live-dot ${storyFeed?.source === 'zhihu-live' ? 'online' : ''}`} /><strong>{storyFeed?.source === 'zhihu-live' ? (locale === 'en' ? 'Zhihu API connected' : '知乎 API 已连接') : (locale === 'en' ? 'Curated offline mode' : '策划离线模式')}</strong><small>{storyFeed?.warning ? (locale === 'en' ? 'Upstream unavailable · safe fallback active' : '上游暂不可用 · 已启用透明降级') : `Work ID ${featuredStory.workId}`}</small></div>
     </header>
-    <article className="blueblood-hero">
+    <article id="blueblood-archive" className="blueblood-hero">
       <div className="blueblood-cover">{featuredStory.artwork ? <img src={featuredStory.artwork} alt={locale === 'en' ? 'Blue Blood cover' : '《蓝血》封面'} /> : <span>BLUE<br />BLOOD</span>}<i /></div>
       <div className="blueblood-story-copy">
         <div className="story-tags"><span className="tag ready">{locale === 'en' ? 'Only playable story' : '唯一完整案卷'}</span>{featuredStory.labels.slice(0, 5).map((label) => <span className="tag" key={label}>{label}</span>)}</div>
@@ -463,12 +469,15 @@ function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: 
       </div>
     </article>
     <KanshanStoryGuide locale={locale} onStart={() => selectLevel(featuredStory.caseId)} />
-    <div className="blueblood-loop" aria-label={locale === 'en' ? 'Game flow' : '游戏流程'}>
+    <div id="game-flow" className="blueblood-loop" aria-label={locale === 'en' ? 'Game flow' : '游戏流程'}>
       {[
-        ['01', locale === 'en' ? 'Know the hook' : '阅读简介', locale === 'en' ? 'Learn only what Fang Nuo knows at the opening.' : '只了解方诺在开篇已经知道的事实。'],
-        ['02', locale === 'en' ? 'Search the excerpt' : '原文搜证', locale === 'en' ? 'Find six clues across three scenes.' : '在三个场景中找到六条可核验线索。'],
-        ['03', locale === 'en' ? 'Build four cards' : '六选四组牌', locale === 'en' ? 'Use four exhibits to challenge ordinary explanations.' : '用四张证据卡挑战疲劳、误记与巧合。'],
-        ['04', locale === 'en' ? 'Choose a question' : '选择求证', locale === 'en' ? 'Pick a hypothesis and a safer Zhihu question.' : '选择阶段假说，并替方诺设计知乎问题。'],
+        ['01', locale === 'en' ? 'Start investigation' : '进入调查', locale === 'en' ? 'Enter the world that should not exist.' : '进入这个本不该存在的世界。'],
+        ['02', locale === 'en' ? 'Case files' : '案件档案', locale === 'en' ? 'Read the verified public story anchors.' : '阅读经核验的公开故事锚点。'],
+        ['03', locale === 'en' ? 'Character files' : '人物档案', locale === 'en' ? 'Understand Fang Nuo and Jiang Xing.' : '认识方诺与蒋星的立场和困境。'],
+        ['04', locale === 'en' ? 'Evidence' : '证据库', locale === 'en' ? 'Collect six clues across three scenes.' : '在三个现场中收集六条线索。'],
+        ['05', locale === 'en' ? 'Card duel' : '证据链对决', locale === 'en' ? 'Challenge fatigue, false memory and coincidence.' : '用四卡证据链对抗日常解释。'],
+        ['06', locale === 'en' ? 'Final deduction' : '最终推演', locale === 'en' ? 'Choose the explanation best supported by evidence.' : '选择目前最经得起质证的解释。'],
+        ['07', locale === 'en' ? 'Case report' : '结案报告', locale === 'en' ? 'Leave with a question worth asking Zhihu.' : '带着一个值得向知乎追问的问题离开。'],
       ].map(([number, title, body]) => <article key={number}><span>{number}</span><strong>{title}</strong><p>{body}</p></article>)}
     </div>
   </section>;
@@ -780,13 +789,13 @@ function CampaignRun({ demo, onBack, onComplete, onNext }: { demo: DemoCase; onB
     : demo.source?.mode === 'zhihu-live'
       ? (locale === 'en' ? 'Anchor not matched' : '原文锚点未命中')
       : (locale === 'en' ? 'Curated fallback' : '策划离线转述');
-  if (phase === 'ending' && verdict && demo.storyEnding) return <section className="campaign-shell campaign-run-shell story-ending-shell" aria-label={locale === 'en' ? 'Story conclusion' : '故事阶段结论'}>
+  if (phase === 'ending' && verdict && demo.storyEnding) return <section className="campaign-shell campaign-run-shell blueblood-run blueblood-phase-ending story-ending-shell" aria-label={locale === 'en' ? 'Story conclusion' : '故事阶段结论'}>
     <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={locale === 'en' ? 'Back to story' : '返回故事页'}>←</button><div className="phase-rail"><span className="done">1 {locale === 'en' ? 'Investigation' : '线索搜证'}</span><i>→</i><span className="done">2 {locale === 'en' ? 'Challenge' : '解释力对决'}</span><i>→</i><span className="active">3 END</span></div></div>
     {demo.source && <div className="story-source-strip"><strong>{demo.source.provider}《{demo.source.title}》</strong><span>{locale === 'en' ? 'Author' : '作者'}：{demo.source.author} · Work ID {demo.source.workId}</span><small>{demo.source.notice}</small></div>}
     <StoryEndingPanel demo={visibleDemo} verdict={verdict} selectedEvidence={selectedEvidence} onRetry={returnToInvestigation} onFinish={onBack} />
     {demo.source && <KanshanGuideDock locale={locale} phase="ending" selectedCount={selectedEvidence.length} battleResult={battleResult} sourceMode={demo.source.mode} />}
   </section>;
-  return <section className="campaign-shell campaign-run-shell" aria-label={copy.navCampaign}>
+  return <section className={`campaign-shell campaign-run-shell blueblood-run blueblood-phase-${phase} ${phase === 'investigate' && discovered.length === demo.evidence.length ? 'blueblood-evidence-complete' : ''}`} aria-label={copy.navCampaign}>
     <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={demo.source ? (locale === 'en' ? 'Back to story' : '返回故事页') : copy.campaignBack}>←</button><div className="phase-rail"><span className={phase === 'investigate' ? 'active' : 'done'}>{demo.source ? (locale === 'en' ? 'Investigation' : '线索搜证') : copy.courtInvestigate}</span><i>→</i><span className={phase === 'court' ? 'active' : ''}>{demo.source ? (locale === 'en' ? 'Challenge' : '解释力对决') : copy.courtTrial}</span><i>→</i><span>{demo.source ? 'END' : copy.courtVerdict}</span></div></div>{briefOpen && (demo.source ? <StoryBrief demo={visibleDemo} onStart={() => setBriefOpen(false)} onBack={onBack} /> : <div className="level-brief-overlay"><div className="level-brief-card"><span className="brief-stamp">{`CASE ${demo.levelId}`}</span><h2>{visibleDemo.title}</h2><p>{visibleDemo.summary}</p><h3>{copy.briefTitle}</h3><p>{visibleDemo.goal}</p><button type="button" className="button primary" onClick={() => setBriefOpen(false)}>{copy.campaignStart}</button></div></div>)}<div className="campaign-intro-wrap"><button type="button" className="button secondary back-to-map" onClick={onBack}>{copy.campaignBack}</button><div className="panel campaign-intro"><div><span className="tag ready">{demo.source ? '知乎故事互动案卷' : `${locale === 'en' ? 'Level' : '第'} ${demo.levelId} ${locale === 'en' ? '·' : '关 ·'} ${visibleDemo.type}`} {locale === 'en' ? '· Difficulty' : '· 难度'} {demo.difficulty}</span><h2>{`${phase === 'investigate' ? copy.courtInvestigate : copy.courtTrial}：${visibleDemo.title}`}</h2><p>{visibleDemo.goal}</p></div><div className="campaign-kpis"><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Collected' : '已取证') : copy.courtPlayerHp}</small><strong>{phase === 'investigate' ? `${discovered.length}` : `${playerHp}/${PLAYER_MAX_HP}`}</strong></span><span><small>{phase === 'investigate' ? (locale === 'en' ? 'Key evidence' : '关键证据') : copy.courtOpponentHp}</small><strong>{phase === 'investigate' ? `${demo.keyEvidenceIds.filter((id) => discovered.includes(id)).length}/${demo.keyEvidenceIds.length}` : `${enemyHp}/${maxEnemyHp}`}</strong></span><span><small>{locale === 'en' ? 'Score' : '总分'}</small><strong>{investigationScore + score}</strong></span></div></div></div>
     <div className="phase-rail"><span className={phase === 'investigate' ? 'active' : 'done'}>1 {copy.courtInvestigate}</span><i>→</i><span className={phase === 'court' ? 'active' : ''}>2 {copy.courtTrial}</span><i>→</i><span className={verdict ? 'active' : ''}>3 {copy.courtVerdict}</span></div>
     <small className="campaign-focus-line">{copy.campaignFocusLabel}{locale === 'en' ? ': ' : '：'}{visibleDemo.focus.join(' · ')}</small>
@@ -891,7 +900,7 @@ function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShie
   }, []);
   const turnLabel = battleResult ? copy.courtTurnEnd : battleStage === 'opponent-action' ? copy.courtTurnOpponent : battleStage === 'player-action' ? copy.courtTurnPreparing : submitting ? copy.courtWaiting : copy.courtTurnPlayer;
   const visibleEffect = courtEffect ? getBattleEffectCopy(courtEffect.label, locale) : '';
-  return <div className="court-arena">
+  return <div className={`court-arena ${storyMode ? 'blueblood-story-court' : ''}`}>
     <div className="court-topbar">
       <div className="court-meter opponent-meter"><span>{storyMode ? (locale === 'en' ? 'Ordinary explanation' : '日常解释力') : copy.courtOpponentHp}</span><strong>{enemyHp}/{maxEnemyHp}</strong><i><b style={{ width: `${maxEnemyHp ? enemyHp / maxEnemyHp * 100 : 0}%` }} /></i></div>
       <div className="court-round" aria-live="polite"><small>{copy.courtRound} {turn}</small><strong>{battleStage === 'player' && !submitting ? turnTimer : '—'}<em>{copy.courtSeconds}</em></strong><span>{turnLabel}</span></div>

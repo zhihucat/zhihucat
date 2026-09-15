@@ -494,6 +494,7 @@ textarea {
 }
 
 @media (max-width: 680px) {
+  body:has(.blueblood-run) { overflow-x: hidden; }
   .masthead {
     display: flex;
     flex-wrap: wrap;
@@ -1519,4 +1520,584 @@ body:has(.story-ending-shell) .campaign-run-shell { height: calc(100dvh - 8px); 
 
 @media (prefers-reduced-motion: reduce) {
   .kanshan-dock-trigger:hover { transform: none; }
+}
+
+/* --------------------------------------------------------------------------
+   BLUE BLOOD / cinematic investigation skin
+
+   The supplied 16:9 comps are flattened reference images, so they are used
+   only as low-contrast atmosphere. Every label, card and control below stays
+   real HTML and keeps the existing story/API state machine intact.
+   -------------------------------------------------------------------------- */
+
+.blueblood-global-nav { display: none; }
+
+html:has(.blueblood-home),
+html:has(.blueblood-run) { background: #060a0f; }
+
+body:has(.blueblood-home),
+body:has(.blueblood-run) {
+  --bb-bg: #060a0f;
+  --bb-panel: rgb(8 17 26 / 86%);
+  --bb-panel-strong: rgb(5 12 20 / 94%);
+  --bb-line: rgb(143 181 218 / 32%);
+  --bb-line-bright: rgb(130 187 245 / 72%);
+  --bb-blue: #73b7ff;
+  --bb-blue-soft: #b7d9ff;
+  --bb-text: #edf4fb;
+  --bb-muted: #91a2b3;
+  --bb-paper: #d6d9dc;
+  min-height: 100dvh;
+  color: var(--bb-text);
+  background-color: var(--bb-bg);
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: cover;
+  background-attachment: fixed;
+  font-family: "Songti SC", "STSong", "Noto Serif SC", Georgia, serif;
+}
+
+body:has(.blueblood-home) {
+  background-image:
+    linear-gradient(180deg, rgb(3 8 13 / 54%), rgb(3 8 13 / 88%)),
+    url('/assets/blueblood-reference/home.jpg');
+}
+
+body:has(.blueblood-phase-investigate) {
+  background-image:
+    linear-gradient(180deg, rgb(3 8 13 / 72%), rgb(3 8 13 / 91%)),
+    url('/assets/blueblood-reference/investigation.jpg');
+}
+
+body:has(.blueblood-evidence-complete) {
+  background-image:
+    linear-gradient(180deg, rgb(3 8 13 / 74%), rgb(3 8 13 / 92%)),
+    url('/assets/blueblood-reference/evidence.jpg');
+}
+
+body:has(.blueblood-phase-court) {
+  background-image:
+    linear-gradient(180deg, rgb(3 8 13 / 65%), rgb(3 8 13 / 90%)),
+    url('/assets/blueblood-reference/duel.jpg');
+}
+
+body:has(.blueblood-phase-ending) {
+  background-image:
+    linear-gradient(90deg, rgb(3 8 13 / 50%), rgb(3 8 13 / 80%)),
+    url('/assets/blueblood-reference/ending.jpg');
+}
+
+body:has(.blueblood-home)::after,
+body:has(.blueblood-run)::after {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  content: '';
+  pointer-events: none;
+  opacity: .24;
+  background-image:
+    repeating-linear-gradient(0deg, rgb(255 255 255 / 2%) 0 1px, transparent 1px 4px),
+    radial-gradient(circle at center, transparent 20%, rgb(0 0 0 / 62%) 100%);
+}
+
+body:has(.blueblood-home) .masthead {
+  min-height: 64px;
+  grid-template-columns: 230px minmax(360px, 1fr) auto;
+  gap: 1.2rem;
+  padding: .45rem clamp(1rem, 2vw, 2rem);
+  border: 0;
+  border-bottom: 1px solid var(--bb-line);
+  color: var(--bb-text);
+  background: rgb(4 10 16 / 82%);
+  box-shadow: 0 10px 32px rgb(0 0 0 / 32%);
+  backdrop-filter: blur(18px) saturate(80%);
+}
+
+body:has(.blueblood-home) .brand { min-width: 0; color: var(--bb-text); }
+body:has(.blueblood-home) .brand > img,
+body:has(.blueblood-home) .brand > svg,
+body:has(.blueblood-home) .brand-wordmark > * { display: none; }
+body:has(.blueblood-home) .brand-wordmark { display: grid; gap: .22rem; }
+body:has(.blueblood-home) .brand-wordmark::before {
+  content: 'BLUE BLOOD EXPERIMENT';
+  color: var(--bb-blue-soft);
+  font: 700 .68rem/1.1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .2em;
+}
+body:has(.blueblood-home) .brand-wordmark::after {
+  content: 'A WORLD THAT DOES NOT EXIST';
+  color: #718295;
+  font: 600 .46rem/1 "SFMono-Regular", Consolas, monospace;
+  letter-spacing: .22em;
+}
+
+body:has(.blueblood-home) .blueblood-global-nav {
+  display: flex;
+  justify-content: center;
+  align-self: stretch;
+  gap: clamp(.6rem, 2.6vw, 2.5rem);
+}
+.blueblood-global-nav a {
+  position: relative;
+  display: grid;
+  min-width: 70px;
+  place-content: center;
+  gap: .2rem;
+  color: #aab7c5;
+  text-align: center;
+  text-decoration: none;
+}
+.blueblood-global-nav a::after {
+  position: absolute;
+  right: 15%;
+  bottom: -1px;
+  left: 15%;
+  height: 2px;
+  content: '';
+  opacity: 0;
+  background: var(--bb-blue);
+  box-shadow: 0 0 10px var(--bb-blue);
+  transform: scaleX(.2);
+  transition: opacity .18s ease, transform .18s ease;
+}
+.blueblood-global-nav a:hover,
+.blueblood-global-nav a:first-child { color: #f3f7fb; }
+.blueblood-global-nav a:hover::after,
+.blueblood-global-nav a:first-child::after { opacity: 1; transform: scaleX(1); }
+.blueblood-global-nav span { font-size: .76rem; letter-spacing: .12em; }
+.blueblood-global-nav small { color: #718092; font: .42rem/1 "SFMono-Regular", Consolas, monospace; letter-spacing: .18em; }
+
+body:has(.blueblood-home) .player-header-actions { gap: .45rem; }
+body:has(.blueblood-home) .locale-switch,
+body:has(.blueblood-home) .player-chip,
+body:has(.blueblood-home) .player-score,
+body:has(.blueblood-home) .account-action {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(8 17 26 / 72%);
+  box-shadow: none;
+}
+body:has(.blueblood-home) .locale-switch button { color: var(--bb-muted); }
+body:has(.blueblood-home) .locale-switch button.active { color: #06111c; background: var(--bb-blue); box-shadow: 0 0 12px rgb(115 183 255 / 45%); }
+body:has(.blueblood-home) .player-chip-avatar { width: 30px; height: 30px; border-color: var(--bb-line); background: #dce9f4; }
+body:has(.blueblood-home) .player-chip small { color: var(--bb-muted); }
+body:has(.blueblood-home) .player-score { color: var(--bb-blue-soft); }
+
+body:has(.blueblood-home) .page-shell {
+  width: min(1640px, calc(100% - 2rem));
+  padding: 1.1rem 0 2rem;
+}
+.blueblood-home {
+  width: 100%;
+  max-width: 1580px;
+  gap: .85rem;
+  color: var(--bb-text);
+}
+.blueblood-home::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  content: '';
+  border: 1px solid rgb(130 187 245 / 10%);
+  pointer-events: none;
+}
+.blueblood-home-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: clamp(1.2rem, 3vw, 2.5rem);
+  border: 1px solid var(--bb-line);
+  background: linear-gradient(100deg, rgb(4 12 20 / 92%), rgb(7 15 23 / 70%));
+  box-shadow: inset 0 0 46px rgb(72 145 219 / 7%), 0 18px 50px rgb(0 0 0 / 26%);
+  backdrop-filter: blur(11px);
+}
+.blueblood-home-header .eyebrow { margin-bottom: .45rem; color: var(--bb-blue); letter-spacing: .28em; }
+.blueblood-home-header h1 {
+  max-width: 980px;
+  margin: 0;
+  color: #f1f5f9;
+  font-size: clamp(2.4rem, 5.8vw, 5.7rem);
+  font-weight: 700;
+  line-height: .98;
+  letter-spacing: .05em;
+  text-shadow: 0 0 20px rgb(104 177 255 / 18%);
+}
+.blueblood-home-header h1::first-letter { color: var(--bb-blue); }
+.blueblood-home-header p { color: #aebbc8; }
+.blueblood-live-status {
+  border: 1px solid var(--bb-line-bright);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(5 15 24 / 84%);
+  box-shadow: inset 0 0 18px rgb(91 165 240 / 9%);
+}
+.blueblood-live-status small { color: var(--bb-muted); }
+.blueblood-live-status .live-dot { background: #7b8b9c; box-shadow: 0 0 0 3px rgb(123 139 156 / 14%); }
+.blueblood-live-status .live-dot.online { background: #69d9b0; box-shadow: 0 0 14px rgb(105 217 176 / 60%); }
+
+.blueblood-hero {
+  grid-template-columns: minmax(210px, 29%) minmax(0, 1fr);
+  min-height: 360px;
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: linear-gradient(100deg, rgb(3 10 17 / 82%), rgb(6 15 23 / 68%));
+  box-shadow: inset 0 0 70px rgb(51 132 215 / 7%), 0 16px 50px rgb(0 0 0 / 34%);
+  backdrop-filter: blur(10px);
+}
+.blueblood-cover { min-height: 360px; border-right: 1px solid var(--bb-line); background: #07111c; }
+.blueblood-cover img { filter: saturate(.55) grayscale(.28) contrast(1.08); }
+.blueblood-cover::after { background: linear-gradient(180deg, transparent 28%, rgb(3 9 16 / 78%)); }
+.blueblood-cover > i { border: 1px solid var(--bb-blue); background: #0d1a27; box-shadow: inset 0 0 0 7px var(--bb-blue), 0 0 16px var(--bb-blue); }
+.blueblood-story-copy { padding: clamp(1.3rem, 3vw, 2.8rem); }
+.blueblood-home .tag { border: 1px solid var(--bb-line); border-radius: 1px; color: var(--bb-muted); background: rgb(6 14 22 / 74%); }
+.blueblood-home .tag.ready { display: inline-flex; color: var(--bb-blue-soft); background: rgb(39 96 151 / 30%); }
+.blueblood-hook { color: #edf3f8; font-weight: 600; letter-spacing: .06em; }
+.blueblood-stats { gap: 1px; border: 1px solid var(--bb-line); background: var(--bb-line); }
+.blueblood-stats span { border: 0; background: rgb(5 14 22 / 94%); color: var(--bb-muted); }
+.blueblood-stats strong { color: var(--bb-blue-soft); font-family: "SFMono-Regular", Consolas, monospace; font-weight: 500; }
+.blueblood-boundary { border-color: var(--bb-blue); color: #a2b1c1; }
+.blueblood-actions span { color: var(--bb-muted); }
+.blueblood-home .button.primary,
+.blueblood-run .button.primary {
+  border: 1px solid #9acbff;
+  border-radius: 1px;
+  color: #f5f9ff;
+  background: linear-gradient(180deg, rgb(61 127 191 / 90%), rgb(24 68 111 / 92%));
+  box-shadow: inset 0 0 18px rgb(185 222 255 / 14%), 0 0 18px rgb(78 157 235 / 25%);
+}
+.blueblood-home .button.primary:hover,
+.blueblood-run .button.primary:hover { background: linear-gradient(180deg, #599fe2, #285f96); transform: translateY(-1px); }
+
+.blueblood-loop {
+  grid-template-columns: repeat(7, minmax(180px, 1fr));
+  gap: .55rem;
+  overflow-x: auto;
+  padding: .15rem .15rem .65rem;
+  scrollbar-color: var(--bb-blue) rgb(4 10 16 / 50%);
+}
+.blueblood-loop article {
+  min-height: 110px;
+  padding: 1rem .8rem .75rem 3.2rem;
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(5 14 22 / 82%);
+  box-shadow: inset 0 0 24px rgb(115 183 255 / 4%);
+  backdrop-filter: blur(8px);
+}
+.blueblood-loop article:first-child { border-color: var(--bb-blue); box-shadow: inset 0 0 28px rgb(95 169 244 / 13%), 0 0 15px rgb(88 168 246 / 22%); }
+.blueblood-loop article > span { color: var(--bb-blue); font-weight: 500; }
+.blueblood-loop strong { letter-spacing: .08em; }
+.blueblood-loop p { color: var(--bb-muted); }
+
+.blueblood-home .kanshan-overview {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: linear-gradient(120deg, rgb(8 23 34 / 93%) 0 31%, rgb(5 13 21 / 90%) 31% 100%);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 32%);
+}
+.blueblood-home .kanshan-overview::before { width: 1px; background: var(--bb-line); }
+.blueblood-home .kanshan-overview-character { background: radial-gradient(circle at 50% 44%, #dfeeff 0 16%, #253b4e 55%, #07111a 100%); }
+.blueblood-home .kanshan-guide-heading small,
+.blueblood-home .kanshan-intro { color: #a2b1c1; }
+.blueblood-home .kanshan-guide-heading i,
+.blueblood-home .kanshan-topic-tabs button {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-muted);
+  background: rgb(4 12 20 / 75%);
+}
+.blueblood-home .kanshan-topic-tabs button.active { border-color: var(--bb-blue); color: var(--bb-blue-soft); background: rgb(32 87 139 / 35%); box-shadow: 0 0 10px rgb(100 174 247 / 18%); }
+.blueblood-home .kanshan-answer { border-color: var(--bb-blue); color: #d5e0ea; background: rgb(27 52 75 / 48%); }
+
+/* Play screens: real controls on top of the relevant supplied visual comp. */
+body:has(.blueblood-run) .page-shell { width: min(1640px, calc(100% - 1rem)); padding: .4rem 0 0; }
+body:has(.blueblood-run) .campaign-run-shell { color: var(--bb-text); background: transparent; }
+.blueblood-run > .compact-run-nav {
+  min-height: 52px;
+  margin: 0 0 .55rem;
+  padding: .45rem .7rem;
+  border: 1px solid var(--bb-line);
+  background: rgb(4 11 18 / 88%);
+  box-shadow: 0 10px 35px rgb(0 0 0 / 28%);
+  backdrop-filter: blur(14px);
+}
+.blueblood-run .icon-back { border: 1px solid var(--bb-line); color: var(--bb-blue-soft); background: rgb(17 35 52 / 80%); }
+.blueblood-run .phase-rail { color: #718396; }
+.blueblood-run .phase-rail span { border: 1px solid var(--bb-line); color: #718396; background: rgb(5 14 22 / 78%); box-shadow: none; font-family: "SFMono-Regular", Consolas, monospace; letter-spacing: .12em; }
+.blueblood-run .phase-rail span.active { border-color: var(--bb-blue); color: #e5f1ff; background: rgb(42 106 166 / 62%); box-shadow: 0 0 14px rgb(95 173 251 / 25%); }
+.blueblood-run .phase-rail span.done { color: #9fbedc; }
+.blueblood-run .phase-rail i { color: #55718c; }
+.blueblood-run .story-source-strip {
+  border: 1px solid var(--bb-line);
+  color: #d3dce5;
+  background: rgb(4 12 19 / 82%);
+  backdrop-filter: blur(10px);
+}
+.blueblood-run .story-source-strip small { color: var(--bb-muted); }
+.blueblood-run .campaign-focus-line { color: #9eb0c1; }
+.blueblood-run .panel {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: var(--bb-panel);
+  box-shadow: inset 0 0 34px rgb(109 174 236 / 4%), 0 12px 35px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(12px);
+}
+.blueblood-run .panel-heading { border-color: var(--bb-line); }
+.blueblood-run .panel-heading h2 { color: #eaf2f9; font-weight: 500; letter-spacing: .08em; }
+.blueblood-run .tag.ready { display: inline-flex; border: 1px solid var(--bb-line-bright); color: var(--bb-blue-soft); background: rgb(31 80 126 / 36%); }
+.blueblood-run .investigation-layout { grid-template-columns: minmax(210px, .72fr) minmax(430px, 1.65fr) minmax(280px, .92fr); }
+.blueblood-run .investigation-layout .scene-tabs { grid-template-columns: 1fr; gap: .35rem; overflow: auto; }
+.blueblood-run .investigation-layout .scene-tabs button {
+  min-height: 42px;
+  padding: .55rem .65rem;
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #aab7c4;
+  background: rgb(4 12 20 / 72%);
+  text-align: left;
+  letter-spacing: .06em;
+}
+.blueblood-run .investigation-layout .scene-tabs button.active { border-color: var(--bb-blue); color: #edf6ff; background: rgb(32 91 148 / 55%); box-shadow: inset 0 0 18px rgb(124 194 255 / 10%), 0 0 12px rgb(86 168 249 / 22%); }
+.blueblood-run .investigation-layout .scene-board {
+  border: 1px solid var(--bb-line);
+  color: #d7e1ea;
+  background: rgb(4 11 18 / 74%);
+}
+.blueblood-run .investigation-layout .scene-label { padding: .25rem .45rem; border: 0; border-left: 3px solid var(--bb-blue); color: var(--bb-blue-soft); background: transparent; box-shadow: none; }
+.blueblood-run .investigation-layout .scene-board p { color: var(--bb-muted); }
+.blueblood-run .investigation-layout .hotspot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .45rem; }
+.blueblood-run .investigation-layout .hotspot {
+  min-height: 104px;
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #dce6ef;
+  background: rgb(7 18 28 / 86%);
+  box-shadow: none;
+}
+.blueblood-run .investigation-layout .hotspot:hover,
+.blueblood-run .investigation-layout .hotspot.found { border-color: var(--bb-blue); background: rgb(25 68 108 / 58%); box-shadow: 0 0 14px rgb(93 171 250 / 20%); }
+.blueblood-run .investigation-layout .hotspot small { color: var(--bb-muted); }
+.blueblood-run .investigation-layout .source-panel { background: rgb(7 15 22 / 90%); }
+.blueblood-run .investigation-layout .document-button {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #dce6ef;
+  background: rgb(5 14 22 / 78%);
+}
+.blueblood-run .investigation-layout .document-button.active { border-color: var(--bb-blue); background: rgb(28 75 118 / 56%); box-shadow: 0 0 12px rgb(80 159 235 / 17%); }
+.blueblood-run .investigation-layout .document-button small { color: #8497aa; }
+.blueblood-run .investigation-layout .source-reader {
+  border: 0;
+  color: #1a222a;
+  background:
+    linear-gradient(rgb(255 255 255 / 18%), transparent),
+    var(--bb-paper);
+  box-shadow: 0 0 0 1px #8694a0, 10px 12px 0 rgb(0 0 0 / 20%);
+}
+.blueblood-run .investigation-layout .cat-document { color: #20262d; background: #d9dde0; }
+.blueblood-run .investigation-layout .evidence-cards-panel { background: rgb(5 14 22 / 91%); }
+.blueblood-run .investigation-layout .evidence-inventory { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .42rem; }
+.blueblood-run .investigation-layout .evidence-card {
+  min-height: 104px;
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #dce6ef;
+  background: rgb(7 18 28 / 92%);
+  box-shadow: none;
+}
+.blueblood-run .investigation-layout .evidence-card p,
+.blueblood-run .investigation-layout .evidence-card small { color: #90a2b3; }
+.blueblood-run .investigation-layout .evidence-card.selected { border-color: var(--bb-blue); color: #fff; background: rgb(29 78 123 / 72%); box-shadow: inset 0 0 16px rgb(117 190 255 / 10%), 0 0 12px rgb(91 170 246 / 28%); }
+.blueblood-run .investigation-layout .evidence-card.locked { opacity: .42; }
+.blueblood-run .investigation-layout .empty-state {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 180px;
+  padding: 1rem;
+  border: 1px dashed var(--bb-line);
+  color: #91a4b6;
+  background: rgb(5 14 22 / 72%);
+}
+.blueblood-run .court-entry { border-color: var(--bb-line); background: rgb(3 10 17 / 86%); }
+.blueblood-run .chain-tip { color: #9badbe; }
+.blueblood-run .error-message { border-color: #d17e7e; color: #ffd9d9; background: rgb(91 20 24 / 80%); }
+
+.blueblood-run .story-brief-overlay {
+  background:
+    linear-gradient(90deg, rgb(3 9 15 / 80%), rgb(4 11 18 / 70%)),
+    url('/assets/blueblood-reference/home.jpg') center / cover;
+}
+.blueblood-run .story-brief-card {
+  border: 1px solid var(--bb-line-bright);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(4 12 20 / 92%);
+  box-shadow: 0 0 50px rgb(55 135 213 / 20%);
+}
+.blueblood-run .story-brief-layout > img { border: 1px solid var(--bb-line-bright); border-radius: 1px; box-shadow: 8px 8px 0 rgb(1 5 9 / 58%); filter: grayscale(.25) saturate(.7); }
+.blueblood-run .story-brief-summary { color: #dce5ed; }
+.blueblood-run .story-brief-role { border-color: var(--bb-blue); color: #cbd9e7; background: rgb(24 59 91 / 55%); }
+.blueblood-run .story-brief-mission { border: 1px solid var(--bb-line); color: #d5e1ec; background: rgb(5 16 25 / 82%); }
+.blueblood-run .story-attribution,
+.blueblood-run .story-brief-kicker { color: var(--bb-muted); }
+
+.blueblood-story-court { color: var(--bb-text); }
+.blueblood-story-court .court-topbar,
+.blueblood-story-court .court-hand-wrap,
+.blueblood-story-court .court-footer {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(4 12 19 / 88%);
+  box-shadow: inset 0 0 28px rgb(105 174 238 / 5%);
+  backdrop-filter: blur(12px);
+}
+.blueblood-story-court .court-stage {
+  border: 1px solid var(--bb-line);
+  background: rgb(3 10 16 / 36%);
+  box-shadow: inset 0 0 90px rgb(0 0 0 / 55%);
+}
+.blueblood-story-court .court-cat { opacity: .13; filter: grayscale(1) saturate(.25); }
+.blueblood-story-court .court-nameplate,
+.blueblood-story-court .court-bench,
+.blueblood-story-court .court-dialogue {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #e4edf5;
+  background: rgb(5 15 24 / 83%);
+}
+.blueblood-story-court .court-dialogue.is-player { border-color: var(--bb-line-bright); background: rgb(26 70 112 / 76%); }
+.blueblood-story-court .court-meter { color: #dce7f0; }
+.blueblood-story-court .court-meter i,
+.blueblood-story-court .court-shield-track { background: #172532; }
+.blueblood-story-court .court-meter i b,
+.blueblood-story-court .court-shield-track b { background: linear-gradient(90deg, #2c75b8, #8ac8ff); box-shadow: 0 0 12px rgb(96 179 255 / 52%); }
+.blueblood-story-court .court-hand { gap: .55rem; }
+.blueblood-story-court .court-card {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #dbe7f1;
+  background: linear-gradient(180deg, rgb(18 37 54 / 96%), rgb(5 14 22 / 97%));
+  box-shadow: 0 8px 20px rgb(0 0 0 / 28%);
+}
+.blueblood-story-court .court-card:hover:not(:disabled) { border-color: var(--bb-blue); box-shadow: 0 0 17px rgb(91 171 250 / 30%); transform: translateY(-2px); }
+.blueblood-story-court .court-card small { color: #93a6b7; }
+.blueblood-story-court .court-card-cost { border-color: var(--bb-line); color: var(--bb-blue-soft); background: rgb(13 37 58 / 92%); }
+.blueblood-story-court .court-evidence-art { border: 1px solid #607b92; filter: grayscale(.35) saturate(.65) contrast(1.08); }
+.blueblood-story-court .battle-result,
+.blueblood-story-court .verdict-card { border: 1px solid var(--bb-line-bright); color: #e8f2fb; background: rgb(6 17 27 / 95%); box-shadow: 0 0 25px rgb(83 165 244 / 18%); }
+
+.blueblood-phase-ending > .compact-run-nav { background: rgb(4 11 18 / 92%); }
+.blueblood-phase-ending > .story-source-strip { margin-bottom: .65rem; }
+.blueblood-phase-ending .story-ending-panel { padding: 0 .15rem 1rem; }
+.blueblood-phase-ending .story-ending-hero {
+  border: 1px solid var(--bb-line-bright);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: linear-gradient(105deg, rgb(5 14 22 / 93%), rgb(17 29 39 / 80%));
+  box-shadow: 0 16px 44px rgb(0 0 0 / 34%);
+}
+.blueblood-phase-ending .story-ending-hero h1 { color: #f0f4f7; font-weight: 600; letter-spacing: .08em; }
+.blueblood-phase-ending .story-ending-hero aside { border-color: var(--bb-blue); color: #dae8f5; background: rgb(31 77 118 / 55%); }
+.blueblood-phase-ending .story-ending-rights { border-color: #8db9e3; color: #aebdca; background: rgb(5 14 22 / 82%); }
+.blueblood-phase-ending .ending-evidence-strip { border: 1px solid var(--bb-line); background: rgb(4 12 19 / 90%); }
+.blueblood-phase-ending .ending-step {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: var(--bb-text);
+  background: rgb(6 15 23 / 91%);
+  box-shadow: 0 12px 35px rgb(0 0 0 / 22%);
+}
+.blueblood-phase-ending .ending-step-heading p { color: var(--bb-muted); }
+.blueblood-phase-ending .hypothesis-grid button,
+.blueblood-phase-ending .question-grid button {
+  border: 1px solid var(--bb-line);
+  border-radius: 2px;
+  color: #dfe8f0;
+  background: rgb(8 20 30 / 92%);
+}
+.blueblood-phase-ending .hypothesis-grid button:hover,
+.blueblood-phase-ending .question-grid button:hover,
+.blueblood-phase-ending .hypothesis-grid button.selected,
+.blueblood-phase-ending .question-grid button.selected { border-color: var(--bb-blue); color: #fff; background: rgb(28 76 119 / 72%); box-shadow: 0 0 15px rgb(84 165 243 / 24%); }
+.blueblood-phase-ending .hypothesis-grid button p,
+.blueblood-phase-ending .question-grid small { color: #9aabba; }
+.blueblood-phase-ending .hypothesis-result > div,
+.blueblood-phase-ending .question-result { border-color: var(--bb-blue); color: #d9e5ef; background: rgb(22 53 80 / 63%); }
+.blueblood-phase-ending .hypothesis-result > div:nth-child(2) { border-color: #b88282; background: rgb(79 37 40 / 62%); }
+.blueblood-phase-ending .story-ending-footer { border: 1px solid var(--bb-line-bright); border-radius: 2px; color: #e6eff7; background: rgb(6 17 27 / 94%); }
+.blueblood-phase-ending .story-ending-footer p { color: #9eb0c0; }
+.blueblood-phase-ending .button.secondary,
+.blueblood-run .button.secondary { border: 1px solid var(--bb-line); border-radius: 1px; color: #c9d8e5; background: rgb(7 18 28 / 86%); box-shadow: none; }
+
+.blueblood-home :where(a, button):focus-visible,
+.blueblood-run :where(a, button):focus-visible { outline: 2px solid var(--bb-blue); outline-offset: 3px; }
+
+@media (max-width: 1180px) {
+  body:has(.blueblood-home) .masthead { grid-template-columns: 190px minmax(280px, 1fr) auto; }
+  body:has(.blueblood-home) .player-chip small { display: none; }
+  .blueblood-global-nav { gap: .5rem; }
+  .blueblood-run .investigation-layout { grid-template-columns: minmax(180px, .7fr) minmax(360px, 1.45fr) minmax(240px, .9fr); }
+  .blueblood-run .investigation-layout .evidence-inventory { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 900px) {
+  body:has(.blueblood-home),
+  body:has(.blueblood-run) { background-position: 48% top; background-attachment: scroll; }
+  body:has(.blueblood-home) .masthead { grid-template-columns: minmax(0, 1fr) auto; min-height: 58px; }
+  body:has(.blueblood-home) .blueblood-global-nav { display: none; }
+  .blueblood-home-header { grid-template-columns: 1fr; align-items: start; }
+  .blueblood-live-status { justify-self: stretch; min-width: 0; }
+  .blueblood-run .investigation-layout { grid-template-columns: 1fr 1.45fr; overflow: auto; }
+  .blueblood-run .investigation-layout .evidence-cards-panel { grid-column: 1 / -1; grid-row: auto; min-height: 300px; }
+  .blueblood-run .investigation-layout .evidence-inventory { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 680px) {
+  body:has(.blueblood-home) .masthead { position: relative; padding: .45rem .65rem; }
+  body:has(.blueblood-home) .brand-wordmark::before { font-size: .58rem; }
+  body:has(.blueblood-home) .brand-wordmark::after { display: none; }
+  body:has(.blueblood-home) .player-chip { min-width: 42px; padding: .2rem; }
+  body:has(.blueblood-home) .player-chip { flex: 0 0 42px; width: 42px; }
+  body:has(.blueblood-home) .player-chip span { display: none; }
+  body:has(.blueblood-home) .player-score { display: none; }
+  body:has(.blueblood-home) .page-shell { width: calc(100% - 1rem); padding-top: .5rem; }
+  .blueblood-home-header { padding: 1rem; }
+  .blueblood-home-header h1 { font-size: clamp(2rem, 11vw, 3.1rem); line-height: 1.05; }
+  .blueblood-home-header p { font-size: .76rem; }
+  .blueblood-hero { grid-template-columns: 1fr; min-height: 0; }
+  .blueblood-cover { min-height: 210px; max-height: 240px; border-right: 0; border-bottom: 1px solid var(--bb-line); }
+  .blueblood-stats { grid-template-columns: 1fr 1fr; }
+  .blueblood-loop { grid-template-columns: repeat(7, minmax(170px, 72vw)); }
+  .blueblood-home .kanshan-overview { grid-template-columns: 1fr; }
+  .blueblood-home .kanshan-overview-character { min-height: 160px; }
+  body:has(.blueblood-run) .page-shell { width: calc(100% - .65rem); }
+  body:has(.blueblood-run) .campaign-run-shell { height: auto; min-height: calc(100dvh - .4rem); overflow: visible; }
+  .blueblood-run,
+  .blueblood-run > *,
+  .blueblood-run .investigation-layout,
+  .blueblood-run .investigation-layout > .panel { min-width: 0; max-width: 100%; }
+  .blueblood-run > .compact-run-nav { position: sticky; top: 0; z-index: 12; overflow: hidden; }
+  .blueblood-run .compact-run-nav .phase-rail { flex: 1; min-width: 0; overflow-x: auto; }
+  .blueblood-run .compact-run-nav .phase-rail span { white-space: nowrap; }
+  .blueblood-run .investigation-layout { grid-template-columns: 1fr; height: auto; overflow: visible; }
+  .blueblood-run .investigation-layout > .panel,
+  .blueblood-run .investigation-layout .evidence-cards-panel { grid-column: 1; grid-row: auto; min-height: 0; height: auto; overflow: visible; }
+  .blueblood-run .investigation-layout .scene-tabs { width: 100%; max-width: 100%; grid-template-columns: repeat(3, minmax(150px, 1fr)); overflow-x: auto; }
+  .blueblood-run .investigation-layout .scene-tabs { scrollbar-width: none; }
+  .blueblood-run .investigation-layout .scene-tabs::-webkit-scrollbar { display: none; }
+  .blueblood-run .investigation-layout .scene-board { min-height: 260px; }
+  .blueblood-run .investigation-layout .evidence-inventory { grid-template-columns: 1fr 1fr; max-height: none; }
+  .blueblood-run .investigation-layout .source-reader { min-height: 310px; }
+  .blueblood-story-court .court-cat { opacity: .08; }
+  .blueblood-phase-ending .story-ending-panel { gap: .6rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .blueblood-global-nav a::after,
+  .blueblood-story-court .court-card { transition: none; }
 }
