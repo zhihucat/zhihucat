@@ -1,10 +1,17 @@
-const { ZHIHU_HACKATHON_API_BASE, validateWorkId } = require('./zhihu-content');
+import { ZHIHU_HACKATHON_API_BASE, validateWorkId } from './zhihu-content.ts';
+import type { ZhihuContentClient, ZhihuStoryDetail, ZhihuStorySummary } from './zhihu-content.ts';
+import type { CampaignCard, CampaignCase, CampaignEvidence, StorySource } from './types.ts';
 
-const FEATURED_STORY_ID = '2025684191967294692';
-const FEATURED_STORY_ORIGINAL_URL = 'https://www.zhihu.com/market/paid_column/2025901212759783232/section/2025684191967294692';
-const STORY_CASE_PREFIX = 'zhihu-story-';
+export const FEATURED_STORY_ID = '2025684191967294692';
+export const FEATURED_STORY_ORIGINAL_URL = 'https://www.zhihu.com/market/paid_column/2025901212759783232/section/2025684191967294692';
+export const STORY_CASE_PREFIX = 'zhihu-story-';
 
-const featuredFallback = {
+type StorySeed = Partial<ZhihuStorySummary & ZhihuStoryDetail> & {
+  work_id: string;
+  labels?: string[];
+};
+
+const featuredFallback: StorySeed = {
   work_id: FEATURED_STORY_ID,
   title: '蓝血',
   chapter_name: '蓝血',
@@ -18,11 +25,11 @@ const featuredFallback = {
   content_length: 0,
 };
 
-function storyApiUrl(workId) {
+function storyApiUrl(workId: string): string {
   return `${ZHIHU_HACKATHON_API_BASE}/story/${encodeURIComponent(workId)}`;
 }
 
-function safeZhihuImageUrl(value) {
+function safeZhihuImageUrl(value: unknown): string {
   try {
     const url = new URL(String(value || ''));
     if (url.protocol !== 'https:' || (!url.hostname.endsWith('.zhimg.com') && !url.hostname.endsWith('.zhihu.com'))) return '';
@@ -32,37 +39,47 @@ function safeZhihuImageUrl(value) {
   }
 }
 
-function decorateSummary(item) {
+function decorateSummary(item: StorySeed) {
   const workId = String(item.work_id);
   return {
     workId,
     caseId: `${STORY_CASE_PREFIX}${workId}`,
-    title: item.title,
+    title: item.title || item.chapter_name || '',
     artwork: safeZhihuImageUrl(item.artwork || item.tab_artwork),
-    description: item.description || '',
+    description: item.description || item.introduction || '',
     labels: Array.isArray(item.labels) ? item.labels : [],
     playable: workId === FEATURED_STORY_ID,
   };
 }
 
-async function listStoryChoices(client) {
+export async function listStoryChoices(client: ZhihuContentClient) {
   try {
     const stories = await client.listStories();
     const decorated = stories.map(decorateSummary);
     if (!decorated.some((story) => story.playable)) throw new Error('知乎故事目录中暂无《蓝血》');
     decorated.sort((left, right) => Number(right.playable) - Number(left.playable));
-    return { stories: decorated, source: 'zhihu-live', featuredWorkId: FEATURED_STORY_ID };
+    return { stories: decorated, source: 'zhihu-live' as const, featuredWorkId: FEATURED_STORY_ID };
   } catch (error) {
     return {
       stories: [decorateSummary(featuredFallback)],
-      source: 'curated-fallback',
+      source: 'curated-fallback' as const,
       featuredWorkId: FEATURED_STORY_ID,
-      warning: error.message,
+      warning: error instanceof Error ? error.message : '知乎故事目录暂不可用',
     };
   }
 }
 
-function makeEvidence(workId, key, title, description, purpose, sourceRange, type = 'document', credibility = 9, quote = '') {
+function makeEvidence(
+  workId: string,
+  key: string,
+  title: string,
+  description: string,
+  purpose: string,
+  sourceRange: string,
+  type = 'document',
+  credibility = 9,
+  quote = '',
+): CampaignEvidence {
   return {
     id: `${STORY_CASE_PREFIX}${workId}-ev-${key}`,
     title,
@@ -78,16 +95,23 @@ function makeEvidence(workId, key, title, description, purpose, sourceRange, typ
   };
 }
 
-function buildBlueBloodCase(story, mode = 'zhihu-live') {
+const storyCards: CampaignCard[] = [
+  { id: 'story-observation', name: '现场观察', type: 'damage', cost: 1, value: 2, hint: '固定身体异常', text: '红血与蓝血的现场观察互相冲突，不能只用记忆偏差解释。' },
+  { id: 'story-cross-check', name: '交叉核验', type: 'damage', cost: 2, value: 4, hint: '对照独立材料', text: '把公共资料、现场观察和个人记忆分开核验。' },
+  { id: 'story-caution', name: '保留解释', type: 'defense', cost: 1, value: 2, hint: '区分事实与推断', text: '现有材料支持异常，但尚不足以宣布原作真相。' },
+  { id: 'story-timeline', name: '异常时间线', type: 'damage', cost: 3, value: 7, hint: '串联定向测试与跟踪', text: '定向试卷和灰夹克让孤立异常形成可继续验证的时间线。' },
+];
+
+export function buildBlueBloodCase(story: Partial<StorySeed> = featuredFallback, mode: StorySource['mode'] = 'zhihu-live'): CampaignCase {
   const workId = FEATURED_STORY_ID;
-  const title = story.chapter_name || story.title || featuredFallback.title;
-  const author = story.author_name || featuredFallback.author_name;
-  const introduction = story.introduction || story.description || featuredFallback.introduction;
+  const title = story.chapter_name || story.title || featuredFallback.title || '蓝血';
+  const author = story.author_name || featuredFallback.author_name || '桃花先生';
+  const introduction = story.introduction || story.description || featuredFallback.introduction || '';
   const caseSummary = '方诺发现，周围的人都把“人的血液原本是蓝色，接触空气后才会变红”当作常识；可她刺破手指时，看到的血从一开始就是红色。很快，不一致从身体蔓延到公共记录和周围人的行为。她必须在被察觉之前，判断究竟是谁的世界出了错。';
-  const labels = Array.isArray(story.labels) && story.labels.length ? story.labels : featuredFallback.labels;
-  const artwork = safeZhihuImageUrl(story.artwork || story.tab_artwork) || featuredFallback.artwork;
+  const labels = Array.isArray(story.labels) && story.labels.length ? story.labels : (featuredFallback.labels || []);
+  const artwork = safeZhihuImageUrl(story.artwork || story.tab_artwork) || String(featuredFallback.artwork || '');
   const content = typeof story.content === 'string' ? story.content.replace(/\r\n/g, '\n') : '';
-  const quoteIfPresent = (quote) => content.includes(quote) ? quote : '';
+  const quoteIfPresent = (quote: string) => content.includes(quote) ? quote : '';
   const evidence = [
     makeEvidence(workId, 'manual', '培训教材的蓝血常识', '培训师、教材和所有同事都坚持人的血液原本呈蓝色。', '证明“蓝血”在这个世界被当作公开且一致的常识。', '开篇 · 公司急救培训', 'document', 9, quoteIfPresent('人的血液是蓝色的，接触空气后才会慢慢氧化变红。')),
     makeEvidence(workId, 'finger', '指尖流出的红血', '方诺独自在洗手间刺破手指，看到自己的血从一开始就是红色。', '证明方诺自身的生理现象与周围常识存在直接冲突。', '开篇 · 洗手间自检', 'image', 8, quoteIfPresent('鲜红色的血涌上来，我总算长舒一口气。')),
@@ -97,7 +121,6 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
     makeEvidence(workId, 'follower', '没有折返的灰夹克', '灰夹克男子多次出现并疑似尾随；他走进没有出口的老巷后，方诺等了很久也没见他折返。', '支持“被监视”或“存在异常通道”的假说，但也保留误认、藏身等日常解释。', '第03节 · 老街跟踪', 'image', 7, quoteIfPresent('但灰夹克从我面前走过后，我等了很久，他却始终没有回来。')),
   ];
   const verifiedQuoteCount = evidence.filter((item) => item.quote).length;
-
   const documents = evidence.map((item) => ({
     id: item.sourceDocumentId,
     name: item.title,
@@ -113,7 +136,7 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
     levelId: 91,
     levelTitle: '蓝血疑云',
     desc: '知乎故事互动案卷',
-    title: `蓝血疑云 · 谁的世界出了错？`,
+    title: '蓝血疑云 · 谁的世界出了错？',
     type: '知乎故事 · 悬疑推理',
     difficulty: 3,
     playerSide: '异常解释 · 世界规则发生变化',
@@ -141,10 +164,9 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
     ],
     documents,
     evidence,
-    // Three required anchors leave the fourth court slot for an actual player choice:
-    // public-record mismatch or the weaker, more speculative follower clue.
     keyEvidenceIds: [evidence[1].id, evidence[2].id, evidence[4].id],
     hypothesisEvidenceIds: [evidence[3].id, evidence[5].id],
+    cards: storyCards,
     keywords: [
       ['红血', '蓝血', '同事', '观察', '生理'],
       ['测试', '试卷', '筛查', '培训师', '常识'],
@@ -160,32 +182,28 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
       description: '以下选项只比较知乎公开片段内不同解释的强弱，并帮助方诺选择下一步验证方式；所有结果均为阶段推演，不代表原作结局，也不会续写原作。',
       hypotheses: [
         {
-          id: 'world-shift',
-          title: '世界规则发生置换',
+          id: 'world-shift', title: '世界规则发生置换',
           description: '方诺进入或醒在了一个规则不同的现实；她保留了原来的记忆和生理特征。',
           support: '方诺的血从一开始就是红色，同事的血却先蓝后红；公共地理资料也与她的稳定记忆发生冲突。',
           evidenceGap: '公开片段没有提供置换发生的时间、机制或其他独立经历者，记忆或感知错位仍未被排除。',
           nextStep: '寻找不依赖当前网络资料的旧物、离线记录或独立记忆者。',
         },
         {
-          id: 'perception-memory-shift',
-          title: '感知或记忆发生系统性错位',
+          id: 'perception-memory-shift', title: '感知或记忆发生系统性错位',
           description: '周围世界可能保持一致，发生偏移的是方诺对常识、地点或现场的感知与记忆。',
           support: '教材、同事和公共资料彼此一致，目前明确持有不同记忆的人只有方诺。',
           evidenceGap: '方诺不仅回忆不同，还观察到了自己与同事不同的血液现象；定制试卷也难以仅用个人误记完整解释。',
           nextStep: '让不知情的第三方分别记录地标记忆和血液观察，再比较结果。',
         },
         {
-          id: 'controlled-observation',
-          title: '有人在进行现实操控或观察实验',
+          id: 'controlled-observation', title: '有人在进行现实操控或观察实验',
           description: '某个未知主体可能知道方诺察觉了异常，并通过测试和跟随确认她掌握了多少信息。',
           support: '方诺拿到与同事不同的常识试卷；灰夹克男子反复出现，并在进入死胡同后长时间没有折返。',
           evidenceGap: '定制试卷可能是普通抽题差异，灰夹克也可能只是误认或暂时藏身；两者之间尚无直接因果证据。',
           nextStep: '记录测试题差异和灰夹克出现时间，验证两者是否持续相关。',
         },
         {
-          id: 'insufficient-evidence',
-          title: '证据不足，暂不站队',
+          id: 'insufficient-evidence', title: '证据不足，暂不站队',
           description: '三种解释都能解释部分事实，但没有一种覆盖全部线索。',
           support: '当前最可靠的结论只是：方诺的个人经验与周围共同认知存在持续冲突。',
           evidenceGap: '血液现象、城市记忆、定向测试与灰夹克之间尚未形成能够排除其他解释的完整因果链。',
@@ -194,34 +212,28 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
       ],
       questions: [
         {
-          id: 'direct-disclosure',
-          title: '直接曝光',
+          id: 'direct-disclosure', title: '直接曝光',
           question: '为什么我的血从流出时就是红色，而周围人都说血液接触空气前是蓝色？',
           explanation: '这条问题把最核心的异常完整公开，容易获得医学解释、类似经历和直接质疑，也可能最快发现回答者之间是否存在认知差异。',
           informationValue: '高：直接检验“蓝血是否为共同常识”，并可能获得独立观察案例。',
           risk: '高：血液差异非常具体。如果确实有人在筛查方诺，这条问题可能暴露她已经察觉异常。',
-          limitation: '回答者可能复述公开资料，无法证明他们亲眼观察过血液现象。',
-          recommended: false,
+          limitation: '回答者可能复述公开资料，无法证明他们亲眼观察过血液现象。', recommended: false,
         },
         {
-          id: 'cross-check',
-          title: '交叉验证',
+          id: 'cross-check', title: '交叉验证',
           question: '做一个不搜索的记忆小调查：你第一反应里，东方明珠位于哪座城市？你最早从哪里知道这个答案？',
           explanation: '这条问题不提血液，也不直接宣称世界异常，却能收集独立记忆及其来源，检验“公共资料一致”和“个人记忆一致”是否是一回事。',
           informationValue: '高：能够比较回答内容、记忆来源和形成时间，比简单投票更有验证价值。',
           risk: '中：问题略显反常，但不会直接暴露方诺最独特的生理差异。',
-          limitation: '回答者仍可能先搜索再作答，因此必须明确要求“不搜索、只写第一反应”。',
-          recommended: true,
+          limitation: '回答者仍可能先搜索再作答，因此必须明确要求“不搜索、只写第一反应”。', recommended: true,
         },
         {
-          id: 'low-risk-probe',
-          title: '低风险试探',
+          id: 'low-risk-probe', title: '低风险试探',
           question: '最近总把熟悉的城市地标记错位置，怎样区分疲劳、记忆偏差和资料错误？',
           explanation: '这条问题不会透露方诺的血液差异或被测试经历，主要用于收集安全的自检方法和验证步骤。',
           informationValue: '低至中：能够获得调查方法，但不能直接验证世界规则是否发生变化。',
           risk: '低：看起来像普通的记忆与生活经验求助。',
-          limitation: '回答可能集中在休息、就医等一般建议，难以触及异常本身。',
-          recommended: false,
+          limitation: '回答可能集中在休息、就医等一般建议，难以触及异常本身。', recommended: false,
         },
       ],
       closing: '你没有替方诺决定真相，只替她决定了下一步该验证什么。故事给出答案之前，先提出一个经得起质证的问题。',
@@ -249,31 +261,19 @@ function buildBlueBloodCase(story, mode = 'zhihu-live') {
         ? `本案已实时核验 ${verifiedQuoteCount} 条知乎公开片段短引；完整正文不落盘，游戏推演不代表原作结局。`
         : mode === 'zhihu-live'
           ? '已读取知乎公开片段，但预设原文锚点未命中；当前仅展示策划转述，游戏推演不代表原作结局。'
-        : '知乎接口当前不可用，本案暂用策划转述；恢复在线后会重新核验短引，游戏推演不代表原作结局。',
+          : '知乎接口当前不可用，本案暂用策划转述；恢复在线后会重新核验短引，游戏推演不代表原作结局。',
     },
   };
 }
 
-async function getStoryCase(value, client) {
+export async function getStoryCase(value: unknown, client: ZhihuContentClient): Promise<CampaignCase> {
   const workId = validateWorkId(value);
   if (workId !== FEATURED_STORY_ID) {
-    const error = new Error('该故事尚未完成互动案卷编排');
-    error.statusCode = 404;
-    throw error;
+    throw Object.assign(new Error('该故事尚未完成互动案卷编排'), { statusCode: 404 });
   }
   try {
-    const story = await client.getStory(workId);
-    return buildBlueBloodCase(story, 'zhihu-live');
+    return buildBlueBloodCase(await client.getStory(workId), 'zhihu-live');
   } catch {
     return buildBlueBloodCase(featuredFallback, 'curated-fallback');
   }
 }
-
-module.exports = {
-  FEATURED_STORY_ID,
-  FEATURED_STORY_ORIGINAL_URL,
-  STORY_CASE_PREFIX,
-  buildBlueBloodCase,
-  getStoryCase,
-  listStoryChoices,
-};

@@ -2,19 +2,32 @@
 // Levels 1–3 retain the historical case premises; levels 4–10 expand its topic outline.
 // The imported EAZO set is appended as levels 11–20 and kept in a separate module.
 // All documents below are fictional training exhibits, not real case records.
-const { eazoCampaignCases } = require('./eazo-campaign-cases');
-const cardTemplates = [
+import { eazoCampaignCases } from './eazo-campaign-cases.ts';
+import type { CampaignCard, CampaignCase } from './types.ts';
+
+type ExhibitSpec = {
+  key: string; scene: number; title: string; range: string; description: string;
+  purpose: string; content: string; type?: string; icon?: string; name?: string;
+  credibility?: number; optional?: boolean;
+};
+type CaseSpec = Pick<CampaignCase, 'id' | 'levelId' | 'levelTitle' | 'desc' | 'type' | 'difficulty'
+  | 'playerSide' | 'opponentSide' | 'goal' | 'summary' | 'focus' | 'keywords' | 'adversary'> & {
+  caseTitle: string; scenes: { title: string; description: string }[]; exhibits: ExhibitSpec[];
+  arguments: string[]; award: string; reasoning: string; laws: string[];
+};
+
+const cardTemplates: Omit<CampaignCard, 'text'>[] = [
   { id: 'recorded', name: '已为您记录', type: 'damage', cost: 1, value: 2, hint: '用原件固定关键事实' },
   { id: 'verify', name: '正在核实', type: 'damage', cost: 2, value: 4, hint: '核对争议材料的证明力' },
   { id: 'script', name: '标准话术', type: 'defense', cost: 1, value: 2, hint: '护盾 +3，回复一点精力' },
   { id: 'question', name: '交叉质询', type: 'damage', cost: 3, value: 7, hint: '围绕本案争点串联证据' },
 ];
 
-function makeCards(arguments_) {
+function makeCards(arguments_: string[]): CampaignCard[] {
   return cardTemplates.map((card, index) => ({ ...card, text: arguments_[index] }));
 }
 
-function defineCase(spec) {
+function defineCase(spec: CaseSpec): CampaignCase {
   const evidence = spec.exhibits.map((exhibit) => ({
     id: `${spec.id}-ev-${exhibit.key}`, title: exhibit.title, type: exhibit.type || 'document',
     sourceDocumentId: `${spec.id}-doc-${exhibit.key}`, sourceRange: exhibit.range,
@@ -237,7 +250,7 @@ const additionalCases = [
   }),
 ];
 
-const rentalCase = {
+const rentalCaseBase = {
   id: 'rental-deposit-001', title: '租赁押金争议：墙面划痕是谁造成？', type: '房屋租赁合同纠纷', difficulty: 1,
   playerSide: '原告 · 租客张某', opponentSide: '被告 · 房东李某', goal: '证明房东无权扣留全部押金，并指出维修金额缺乏真实凭证。',
   focus: ['损坏是否由租客造成', '房东是否有权扣除全部押金', '维修金额是否有证据'],
@@ -270,7 +283,8 @@ const rentalCase = {
   keyEvidenceIds: ['ev-movein-photo', 'ev-chat', 'ev-contract', 'ev-repair'],
 };
 
-Object.assign(rentalCase, {
+const rentalCase: CampaignCase = {
+  ...rentalCaseBase,
   levelId: 1, levelTitle: '押金猎人', desc: '租房押金纠纷', actionPoints: 6,
   title: '押金猎人 · 租赁押金争议：墙面划痕是谁造成？',
   summary: '租客张某退租后，房东李某以墙面及家具损坏为由扣留3000元押金，只提供2500元维修报价。入住照片和房东此前聊天均提及旧痕。',
@@ -294,7 +308,7 @@ Object.assign(rentalCase, {
       { title: '《民法典》第509条', article: '当事人应当按照约定全面履行自己的义务。', url: 'https://www.court.gov.cn/zixun/xiangqing/233181.html', status: '训练用摘要 · 请核验现行文本' },
     ],
   },
-});
+};
 // Keep every discoverable rental exhibit traceable in the source reader as well.
 rentalCase.documents[0].content += '\n附件一 · 入住清单：家具已有轻微磨损，双方确认。\n第六条及交接记录：2026-02-28房东单方验收，交接单无双方共同签字。';
 rentalCase.documents[0].hotspots.push(
@@ -305,5 +319,4 @@ rentalCase.documents[1].content += '\n转账记录（完整）：2025-03-01张�
 rentalCase.documents[1].hotspots.push({ id: 'doc-transfer', evidenceId: 'ev-transfer', label: '银行流水：押金3000元已支付' });
 rentalCase.documents.forEach((document) => { document.content = '【虚构训练材料】\n' + document.content; });
 
-const campaignCases = [rentalCase, ...additionalCases, ...eazoCampaignCases];
-module.exports = { campaignCases };
+export const campaignCases: CampaignCase[] = [rentalCase, ...additionalCases, ...eazoCampaignCases];

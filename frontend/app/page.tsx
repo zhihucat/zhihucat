@@ -7,8 +7,8 @@ import { KanshanGuideDock, KanshanStoryGuide } from './components/kanshan-guide'
 import { artworkForEvidence } from './lib/evidence-art';
 import { createCourtSfx, soundForEffect } from './lib/court-sfx';
 import { APP_COPY, LocaleContext, LOCALE_STORAGE_KEY, detectLocale, getBattleEffectCopy, getEvidenceNatureCopy, getLevelCopy, getTacticalCardCopy, getTypeCopy, interpolate, normalizeLocale, translateCaseText, translatePartyLabel, useLocale, type Locale } from './lib/localization';
-import { getAuthUser, getPlayerId, isSupabaseConfigured, isUsernameAvailable, loadLocalPlayerProfile, loadPlayerProfile, loginAccount, logoutAccount, normalizeUsername, onAuthChange, registerAccount, saveCampaignRun, savePlayerProfile, type AuthUser, type PlayerProfile } from './lib/supabase';
-import { battleReducer, canAffordCard, emptyBattle, HAND_SIZE, PLAYER_MAX_HP, PLAYER_MAX_SHIELD, PLAYER_MAX_STAMINA, TURN_SECONDS, OPPONENT_REACTION_DELAY_MS, type BattleCard as EvidenceCard, type BattleEffect, type BattleStage } from './lib/court-battle';
+import { getPlayerId, isSupabaseConfigured, isUsernameAvailable, loadLocalPlayerProfile, loadPlayerProfile, loginAccount, logoutAccount, normalizeUsername, onAuthChange, registerAccount, requestJson, saveCampaignRun, savePlayerProfile, type AuthUser, type BattleProof, type PlayerProfile } from './lib/supabase';
+import { actionSeed, evidenceStats, opponentHealth, battleReducer, canAffordCard, emptyBattle, HAND_SIZE, PLAYER_MAX_HP, PLAYER_MAX_SHIELD, PLAYER_MAX_STAMINA, TURN_SECONDS, OPPONENT_REACTION_DELAY_MS, type BattleCard as EvidenceCard, type BattleEffect, type BattleStage } from './lib/court-battle';
 
 type CaseDraft = {
   id: string;
@@ -55,7 +55,6 @@ type AuditResult = {
 type CampaignEvidence = { id: string; title: string; description: string; proofPurpose: string; credibility: number; type?: string; sourceDocumentId?: string; sourceRange?: string; authenticity?: string; relevance?: string };
 type CampaignScene = { id: string; title: string; description: string; hotspots: Array<{ id: string; title: string; icon: string; evidenceId: string; hint: string }> };
 type CampaignDocument = { id: string; name: string; type: string; content: string; hotspots: Array<{ id: string; evidenceId: string; label: string }> };
-type CampaignLevel = { id: string; levelId: number; title: string; desc: string; difficulty: number; goal: string; keyEvidenceCount: number };
 type StorySource = { provider: string; workId: string; title: string; author: string; labels: string[]; artwork?: string; introduction?: string; mode?: string; notice?: string; apiUrl?: string; originalUrl?: string; verifiedQuoteCount?: number };
 type StoryHypothesis = { id: string; title: string; description: string; support: string; evidenceGap: string; nextStep: string };
 type StoryQuestion = { id: string; title: string; question: string; explanation: string; informationValue: string; risk: string; limitation: string; recommended?: boolean };
@@ -88,20 +87,9 @@ const EVIDENCE_NATURE: Record<string, { label: string; power: number }> = {
   chat: { label: '对话记录', power: 2 },
 };
 
-const BEGINNER_LEVEL_ID = 1;
-const BEGINNER_ENEMY_HP = 20;
-
 function evidenceCard(item: CampaignEvidence, key: boolean, levelId = 0, locale: Locale = 'zh'): EvidenceCard {
   const nature = EVIDENCE_NATURE[item.type || 'document'] || { label: '其他材料', power: 2 };
-  const credibility = item.credibility >= 9 ? 2 : item.credibility >= 7 ? 1 : 0;
-  const value = (key ? 3 : 1) + nature.power + credibility;
-  // The rental dispute is the tutorial encounter. Its evidence remains just as
-  // strong, but the first four cards should be affordable from the starting
-  // stamina pool instead of forcing a recovery-card draw before the player has
-  // learned the combat loop.
-  const cost = levelId === BEGINNER_LEVEL_ID
-    ? Math.max(2, Math.min(4, Math.ceil(value / 3)))
-    : Math.max(2, Math.min(6, Math.ceil(value / 2)));
+  const { value, cost } = evidenceStats(item, key, levelId);
   return {
     id: `card-${item.id}`, evidenceId: item.id, name: translateCaseText(item.title, locale, locale === 'en' ? 'Case exhibit' : item.title),
     nature: getEvidenceNatureCopy(nature.label, locale), key, value,
@@ -120,37 +108,6 @@ function buildHand(demo: DemoCase, evidenceIds: string[], locale: Locale = 'zh')
     .map((item) => evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale));
 }
 
-/* Keep case difficulty tied to the strongest four exhibits, independent of random draws. */
-function opponentHealth(demo: DemoCase, locale: Locale = 'zh') {
-  const evidenceCards = demo.evidence
-    .map((item) => evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale));
-  const health = evidenceCards
-    .sort((a, b) => Number(b.key) - Number(a.key) || b.value - a.value)
-    .slice(0, HAND_SIZE)
-    // Keep the first case readable as a tutorial: one full player health bar
-    // is a clear target, while later cases retain their evidence-derived scale.
-    .reduce((total, card) => total + card.value, 0);
-  if (demo.source) {
-    // A correct Blue Blood deck contains all three anchors plus one free-direction
-    // card. Size the opposing explanation so those four distinct exhibits can end
-    // the round; recovery and shield plays still matter, but repeating evidence is
-    // never required just to overcome a one-point rounding gap.
-    const keyPower = evidenceCards.filter((card) => card.key).reduce((total, card) => total + card.value, 0);
-    const supportPower = evidenceCards.filter((card) => !card.key).map((card) => card.value);
-    return supportPower.length ? keyPower + Math.min(...supportPower) : health;
-  }
-  return demo.levelId === BEGINNER_LEVEL_ID ? Math.min(BEGINNER_ENEMY_HP, health) : health;
-}
-
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const raw = await response.text();
-  let body: { data?: T; error?: { message?: string } } = {};
-  try { body = raw ? JSON.parse(raw) : {}; } catch { body = {}; }
-  if (!response.ok) throw new Error(body?.error?.message || `请求失败：${response.status}`);
-  return (body.data !== undefined ? body.data : body) as T;
-}
-
 function readTextFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -163,7 +120,6 @@ function readTextFile(file: File): Promise<string> {
 export default function HomePage() {
   const pathname = usePathname();
   const router = useRouter();
-  const apiBaseUrl = useMemo(() => (process.env.NEXT_PUBLIC_API_BASE_URL || '/argus-api').replace(/\/$/, ''), []);
   const [locale, setLocale] = useState<Locale>('zh');
   const [caseDraft, setCaseDraft] = useState<CaseDraft | null>(null);
   const [caseLoading, setCaseLoading] = useState(false);
@@ -180,6 +136,10 @@ export default function HomePage() {
   const [profileError, setProfileError] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
+  const [entryAuthDismissed, setEntryAuthDismissed] = useState(false);
+  const [profileRetry, setProfileRetry] = useState(0);
+  const authIdentityRef = useRef<string | null>(null);
+  const profileRevisionRef = useRef(0);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -201,54 +161,39 @@ export default function HomePage() {
 
   useEffect(() => {
     let disposed = false;
-    let authReady = false;
+    let lastIdentity: string | null | undefined;
     async function hydrate(user: AuthUser | null) {
-      const localId = getPlayerId();
-      const id = user?.id || localId;
+      const identity = user?.id || null;
+      if (disposed || lastIdentity === identity) return; // Token refresh needs no profile reload.
+      lastIdentity = identity;
+      authIdentityRef.current = identity;
+      const revision = ++profileRevisionRef.current;
+      const id = user?.id || (isSupabaseConfigured ? '' : getPlayerId());
+      setAuthUser(user);
       setPlayerId(id);
+      setPlayerProfile(null);
+      setProfileLoading(true);
+      setProfileError('');
       try {
-        let profile = await loadPlayerProfile(id);
-        if (!profile && user?.username) {
-          const local = loadLocalPlayerProfile(localId);
-          const seeded: PlayerProfile = { id, name: user.username, avatar: local?.avatar || AVATARS[0].src, totalScore: local?.totalScore || 0, completedLevels: local?.completedLevels || 0 };
-          try { profile = await savePlayerProfile(seeded); } catch { profile = seeded; }
-        }
-        if (!disposed) setPlayerProfile(profile);
-      } catch {
-        if (!disposed) setProfileError(APP_COPY[locale].profileCloudUnavailable);
+        const profile = id ? await loadPlayerProfile(id) : null;
+        if (!disposed && revision === profileRevisionRef.current) setPlayerProfile(profile);
+      } catch (error) {
+        if (!disposed && revision === profileRevisionRef.current) setProfileError(error instanceof Error ? error.message : '账号档案加载失败，请重试');
       } finally {
-        if (!disposed) setProfileLoading(false);
+        if (!disposed && revision === profileRevisionRef.current) setProfileLoading(false);
       }
     }
-    const unsubscribe = onAuthChange((user) => {
-      // Supabase emits its initial session event asynchronously. Wait for the
-      // explicit getAuthUser() result first so a logged-in user never sees a
-      // transient registration modal while that session is still resolving.
-      if (!authReady) return;
-      setAuthUser(user);
-      setProfileLoading(true);
-      void hydrate(user);
-    });
-    getAuthUser().then((user) => {
-      if (disposed) return;
-      authReady = true;
-      setAuthUser(user);
-      void hydrate(user);
-    }).catch(() => {
-      if (disposed) return;
-      authReady = true;
-      setAuthUser(null);
-      void hydrate(null);
-    });
-    return () => { disposed = true; unsubscribe(); };
-  }, []);
+    const unsubscribe = onAuthChange((user) => { void hydrate(user); });
+    if (!isSupabaseConfigured) void hydrate(null);
+    return () => { disposed = true; ++profileRevisionRef.current; unsubscribe(); };
+  }, [profileRetry]);
 
   async function createCase(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setCaseLoading(true); setCaseError('');
     try {
       const form = new FormData(event.currentTarget);
-      setCaseDraft(await requestJson<CaseDraft>(`${apiBaseUrl}/api/cases/draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form.entries())) }));
+      setCaseDraft(await requestJson<CaseDraft>(`/api/cases/draft`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form.entries())) }));
     } catch (error) { setCaseError(error instanceof Error ? error.message : (locale === 'en' ? 'Could not generate case' : '案件生成失败')); }
     finally { setCaseLoading(false); }
   }
@@ -258,58 +203,49 @@ export default function HomePage() {
     setAuditLoading(true); setAuditError('');
     try {
       const form = new FormData(event.currentTarget);
-      setAuditResult(await requestJson<AuditResult>(`${apiBaseUrl}/api/contracts/audit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form.entries())) }));
+      setAuditResult(await requestJson<AuditResult>(`/api/contracts/audit`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(form.entries())) }));
     } catch (error) { setAuditError(error instanceof Error ? error.message : (locale === 'en' ? 'Contract review failed' : '合同审查失败')); }
     finally { setAuditLoading(false); }
   }
 
   async function handleSaveProfile(input: Pick<PlayerProfile, 'name' | 'avatar'>) {
     const nextProfile: PlayerProfile = {
+      ...playerProfile,
       id: playerId || getPlayerId(),
       ...input,
       totalScore: playerProfile?.totalScore || 0,
       completedLevels: playerProfile?.completedLevels || 0,
     };
     setProfileError('');
+    const revision = profileRevisionRef.current;
     try {
       const saved = await savePlayerProfile(nextProfile);
-      setPlayerProfile(saved);
+      if (revision !== profileRevisionRef.current) return;
+      setPlayerProfile((current) => current ? { ...current, name: saved.name, avatar: saved.avatar } : saved);
       setProfileOpen(false);
-    } catch {
-      setPlayerProfile(nextProfile);
-      setProfileOpen(false);
-      setProfileError(APP_COPY[locale].profileSavedLocal);
+    } catch (error) {
+      if (revision === profileRevisionRef.current) setProfileError(error instanceof Error ? error.message : '档案保存失败');
+      throw error;
     }
   }
 
-  async function handleAuthSuccess(user: AuthUser, username: string) {
-    const local = loadLocalPlayerProfile(getPlayerId());
-    let profile = await loadPlayerProfile(user.id);
-    if (!profile) {
-      profile = {
-        id: user.id,
-        name: username,
-        avatar: local?.avatar || AVATARS[0].src,
-        totalScore: local?.totalScore || 0,
-        completedLevels: local?.completedLevels || 0,
-      };
-      try { profile = await savePlayerProfile(profile); } catch { /* local fallback below */ }
-    }
-    setAuthUser({ ...user, username: user.username || username });
-    setPlayerId(user.id);
-    setPlayerProfile(profile);
+  async function handleAuthSuccess() {
+    // The auth subscription is the sole owner of hydration and identity changes.
     setAuthOpen(false);
     setProfileOpen(false);
-    setProfileError('');
+    setEntryAuthDismissed(true);
   }
 
   async function handleLogout() {
     try {
       await logoutAccount();
-      const localId = getPlayerId();
+      authIdentityRef.current = null;
+      ++profileRevisionRef.current;
       setAuthUser(null);
-      setPlayerId(localId);
-      setPlayerProfile(loadLocalPlayerProfile(localId));
+      setPlayerId('');
+      setPlayerProfile(null);
+      setProfileOpen(false);
+      setEntryAuthDismissed(true);
     } catch (error) {
       setProfileError(error instanceof Error ? error.message : APP_COPY[locale].logoutError);
     }
@@ -320,20 +256,31 @@ export default function HomePage() {
     setAuthOpen(true);
   }
 
-  async function handleRunComplete(levelId: number, score: number) {
-    if (!playerProfile || !playerId) return;
-    const nextProfile: PlayerProfile = {
-      ...playerProfile,
-      totalScore: playerProfile.totalScore + score,
-      completedLevels: playerProfile.completedLevels + 1,
-    };
-    setPlayerProfile(nextProfile);
-    const syncResults = await Promise.allSettled([
-      saveCampaignRun({ playerId, levelId, score, outcome: 'player_win' }),
-      savePlayerProfile(nextProfile),
-    ]);
-    if (syncResults.some((result) => result.status === 'rejected')) {
-      setProfileError(APP_COPY[locale].profileRunSavedLocal);
+  async function handleRunComplete(levelId: number, score: number, proof: BattleProof) {
+    const revision = profileRevisionRef.current;
+    if (isSupabaseConfigured && !authIdentityRef.current) {
+      setProfileError(locale === 'en' ? 'Practice complete. Log in before starting a game to save scores.' : '练习已完成；登录后重新开局才能保存云端成绩。');
+      return;
+    }
+    try {
+      let saved: PlayerProfile;
+      if (isSupabaseConfigured) {
+        saved = await saveCampaignRun(proof, authIdentityRef.current!);
+      } else {
+        const current = loadLocalPlayerProfile(playerId);
+        if (!current) return;
+        const completed = current.completedLevelIds || [];
+        saved = await savePlayerProfile(completed.includes(levelId) ? current : { ...current, totalScore: current.totalScore + score, completedLevels: current.completedLevels + 1, completedLevelIds: [...completed, levelId] });
+      }
+      if (revision === profileRevisionRef.current) {
+        setPlayerProfile((current) => isSupabaseConfigured && current?.id === saved.id
+          ? { ...current, totalScore: Math.max(current.totalScore, saved.totalScore), completedLevels: Math.max(current.completedLevels, saved.completedLevels) }
+          : saved);
+        setProfileError('');
+      }
+    } catch (error) {
+      if (revision === profileRevisionRef.current) setProfileError(locale === 'en' ? 'Score not saved. Retry the verdict.' : '成绩尚未保存，请重试裁决。');
+      throw error;
     }
   }
 
@@ -380,11 +327,11 @@ export default function HomePage() {
         </header>
 
         <div className="page-shell" id="main-content">
-          <CampaignSection progressOwnerId={playerId} onRunComplete={handleRunComplete} />
+          <CampaignSection key={authUser?.id || 'practice'} progressOwnerId={playerId || 'practice'} onRunComplete={handleRunComplete} />
         </div>
-        {profileError && <p className="profile-sync-note" role="status">{profileError}</p>}
+        {profileError && <p className="profile-sync-note" role="status">{profileError}{authUser && !playerProfile && <button type="button" onClick={() => setProfileRetry((value) => value + 1)}>{locale === 'en' ? 'Retry' : '重新加载档案'}</button>}</p>}
         {!profileLoading && !authOpen && profileOpen && <ProfileModal profile={playerProfile} authenticated={Boolean(authUser)} onSave={handleSaveProfile} onClose={() => setProfileOpen(false)} onAuthRequest={openAuthModal} />}
-        {authOpen ? <AuthModal onClose={() => setAuthOpen(false)} onSuccess={handleAuthSuccess} /> : null}
+        {(!entryAuthDismissed && !profileLoading && isSupabaseConfigured && !authUser && !playerProfile) || authOpen ? <AuthModal onClose={() => { setAuthOpen(false); setEntryAuthDismissed(true); }} onSuccess={handleAuthSuccess} /> : null}
       </main>
     </LocaleContext.Provider>
   );
@@ -431,10 +378,9 @@ function AuditSection({ onSubmit, loading, error, result }: { onSubmit: (event: 
   </section>;
 }
 
-function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: string; onRunComplete: (levelId: number, score: number) => Promise<void> }) {
+function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: string; onRunComplete: (levelId: number, score: number, proof: BattleProof) => Promise<void> }) {
   const { locale } = useLocale();
   const copy = APP_COPY[locale];
-  const apiBaseUrl = useMemo(() => (process.env.NEXT_PUBLIC_API_BASE_URL || '/argus-api').replace(/\/$/, ''), []);
   const [storyFeed, setStoryFeed] = useState<ZhihuStoryFeed | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [demo, setDemo] = useState<DemoCase | null>(null);
@@ -477,25 +423,24 @@ function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: 
     setLoading(true); setError(''); setDemo(null);
     const storyWorkId = selectedId?.startsWith('zhihu-story-') ? selectedId.slice('zhihu-story-'.length) : '';
     const load = selectedId
-      ? requestJson<DemoCase>(`${apiBaseUrl}/api/zhihu/stories/${encodeURIComponent(storyWorkId)}/case`, { signal: controller.signal }).then((data) => {
+      ? requestJson<DemoCase>(`/api/zhihu/stories/${encodeURIComponent(storyWorkId)}/case`, { signal: controller.signal }).then((data) => {
         if (data.id !== selectedId) throw new Error('案件与所选关卡不一致，请重试');
         if (!controller.signal.aborted) setDemo(data);
       })
-      : requestJson<ZhihuStoryFeed>(`${apiBaseUrl}/api/zhihu/stories`, { signal: controller.signal }).then((stories) => {
+      : requestJson<ZhihuStoryFeed>(`/api/zhihu/stories`, { signal: controller.signal }).then((stories) => {
         if (!controller.signal.aborted) setStoryFeed(stories);
       });
     load.catch((e: Error) => { if (!controller.signal.aborted) setError(e.message); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [apiBaseUrl, selectedId, retry]);
+  }, [selectedId, retry]);
 
   const selectLevel = (id: string | null) => { setDemo(null); setError(''); setLoading(true); setSelectedId(id); };
   if (selectedId && demo?.id === selectedId) return <CampaignRun
-    key={demo.id} demo={demo} apiBaseUrl={apiBaseUrl} onBack={() => selectLevel(null)}
-    onComplete={(score) => {
-      const firstCompletion = !completed[demo.id];
+    key={demo.id} demo={demo} onBack={() => selectLevel(null)}
+    onComplete={async (score, proof) => {
+      await onRunComplete(demo.levelId, score, proof);
       setCompleted((items) => ({ ...items, [demo.id]: Math.max(items[demo.id] || 0, score) }));
-      if (firstCompletion) void onRunComplete(demo.levelId, score);
     }}
   />;
   if (loading || error || selectedId) return <section className="panel loading-panel" aria-label={locale === 'en' ? 'Blue Blood interactive story' : '《蓝血》互动故事'}>
@@ -532,7 +477,7 @@ function CampaignSection({ progressOwnerId, onRunComplete }: { progressOwnerId: 
   </section>;
 }
 
-function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: DemoCase; apiBaseUrl: string; onBack: () => void; onComplete: (score: number) => void; onNext?: () => void }) {
+function CampaignRun({ demo, onBack, onComplete, onNext }: { demo: DemoCase; onBack: () => void; onComplete: (score: number, proof: BattleProof) => Promise<void>; onNext?: () => void }) {
   const { locale } = useLocale();
   const copy = APP_COPY[locale];
   const levelCopy = getLevelCopy(demo.levelId, locale, { title: demo.levelTitle, desc: demo.type });
@@ -557,7 +502,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   const [selectedEvidence, setSelectedEvidence] = useState<string[]>([]);
   const [investigationScore, setInvestigationScore] = useState(0);
   const [investigationLog, setInvestigationLog] = useState<string[]>([]);
-  const maxEnemyHp = useMemo(() => opponentHealth(demo, locale), [demo, locale]);
+  const maxEnemyHp = useMemo(() => opponentHealth(demo), [demo]);
   const [battle, dispatchBattle] = useReducer(battleReducer, maxEnemyHp, emptyBattle);
   const { enemyHp, playerHp, playerShield, stamina: playerStamina, hand: courtHand, turn, cardsPlayed, result: battleResult, effect: courtEffect } = battle;
   const [turnTimer, setTurnTimer] = useState(TURN_SECONDS);
@@ -574,6 +519,13 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   const playedEvidenceIdsRef = useRef<string[]>([]);
 
   const responseRequestRef = useRef<AbortController | null>(null);
+  const proofRef = useRef<BattleProof & { seed: number }>({ ticket: '', seed: 0, actions: [] });
+  const actionTakenRef = useRef(false);
+  const startingRef = useRef(false);
+
+  useEffect(() => {
+    if (battle.stage === 'player') actionTakenRef.current = false;
+  }, [battle.stage, turn]);
 
   useEffect(() => () => {
     responseRequestRef.current?.abort();
@@ -644,6 +596,9 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
       setTurnTimer(remaining);
       if (remaining === 0) {
         window.clearInterval(timer);
+        if (actionTakenRef.current) return;
+        actionTakenRef.current = true;
+        proofRef.current.actions.push(null);
         dispatchBattle({ type: 'opponent', levelId: demo.levelId, timeout: true });
       }
     }, 200);
@@ -656,7 +611,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     responseRequestRef.current = controller;
     setSubmitting(true);
     try {
-      const result = await requestJson<DebateResult>(`${apiBaseUrl}/api/campaign/respond`, {
+      const result = await requestJson<DebateResult>(`/api/campaign/respond`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ caseId: demo.id, argument: text, evidenceIds, history: debate }),
         signal: controller.signal,
@@ -673,12 +628,15 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   }
 
   function playCard(card: EvidenceCard) {
-    if (phase !== 'court' || battle.stage !== 'player' || submitting || verdict || battleResult) return;
+    if (phase !== 'court' || battle.stage !== 'player' || submitting || verdict || battleResult || actionTakenRef.current) return;
     const current = courtHand.find((item) => item.id === card.id);
     if (!current || !canAffordCard(current, playerStamina, playerShield)) return;
     courtSfxRef.current?.unlock();
     setError('');
-    dispatchBattle({ type: 'play', cardId: current.id, seed: Math.floor(Math.random() * 4294967296) });
+    actionTakenRef.current = true;
+    const seed = actionSeed(proofRef.current.seed, proofRef.current.actions.length);
+    proofRef.current.actions.push(current.id);
+    dispatchBattle({ type: 'play', cardId: current.id, seed });
     setScore((value) => value + current.value);
     // Recovery is a tactical action, not fabricated evidence for the legal API.
     if (current.evidenceId) {
@@ -702,8 +660,12 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   async function requestVerdict() {
     if (!battleResult || submitting || verdict) return;
     setSubmitting(true); setError('');
+    const controller = new AbortController();
+    responseRequestRef.current = controller;
     try {
-      const result = await requestJson<Verdict>(`${apiBaseUrl}/api/campaign/verdict`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: demo.id, evidenceIds: playedEvidenceIdsRef.current, debate, gameResult: battleResult }) });
+      const proof: BattleProof = { ticket: proofRef.current.ticket, actions: [...proofRef.current.actions] };
+      const result = await requestJson<Verdict>(`/api/campaign/verdict`, { method: 'POST', body: JSON.stringify(proof), signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (result.caseId !== demo.id) throw new Error(locale === 'en' ? 'The verdict does not match the current case. Please retry.' : '裁决与当前案件不一致，请重试');
       if (locale === 'en') {
         result.winner = translateCaseText(result.winner, locale, 'Winning side');
@@ -713,9 +675,11 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
         result.disclaimer = translateCaseText(result.disclaimer, locale, 'Fictional training feedback, not legal advice.');
         result.sources = result.sources.map((source) => ({ ...source, title: translateCaseText(source.title, locale, 'Legal source'), article: translateCaseText(source.article, locale, 'Applicable legal rule'), status: translateCaseText(source.status, locale, 'Training reference') }));
       }
-      setVerdict(result);
-      if (result.gameResult === 'player_win' && demo.storyEnding) setPhase('ending');
-      else if (result.gameResult === 'player_win') onComplete(result.score);
+      if (result.gameResult === 'player_win') {
+        await onComplete(result.score, proof);
+        if (demo.storyEnding) setPhase('ending');
+      }
+      if (!controller.signal.aborted) setVerdict(result);
     }
     catch (e) { setError(e instanceof Error ? e.message : (locale === 'en' ? 'Failed to request verdict' : '裁决请求失败')); }
     finally { setSubmitting(false); }
@@ -765,7 +729,8 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
       return [...ids, id];
     });
   };
-  const enterCourt = () => {
+  const enterCourt = async () => {
+    if (startingRef.current) return;
     if (demo.source && discovered.length !== demo.evidence.length) {
       const missingCount = demo.evidence.length - discovered.length;
       setError(locale === 'en' ? `Explore all three scenes first. ${missingCount} clue${missingCount === 1 ? '' : 's'} remain.` : `请先完成三个场景的搜证，还有 ${missingCount} 条线索未发现。`);
@@ -786,13 +751,25 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     courtSfxRef.current ??= createCourtSfx();
     courtSfxRef.current.unlock();
     lastSoundEffectRef.current = null;
-    dispatchBattle({
-      type: 'start', deck: buildHand(demo, selectedEvidence, locale), selectedIds: selectedEvidence,
-      enemyHp: maxEnemyHp, seed: Math.floor(Math.random() * 4294967296), requireAllEvidence: Boolean(demo.source),
-    });
-    playedEvidenceIdsRef.current = [];
-    setPhase('court'); setTurnTimer(TURN_SECONDS); setVerdict(null);
-    setDebate([]); setScore(0); setSubmitting(false); setError('');
+    startingRef.current = true;
+    setSubmitting(true); setError('');
+    const controller = new AbortController();
+    responseRequestRef.current = controller;
+    try {
+      const game = await requestJson<{ ticket: string; seed: number }>('/api/campaign/battles', { method: 'POST', body: JSON.stringify({ caseId: demo.id, evidenceIds: selectedEvidence }), signal: controller.signal });
+      if (controller.signal.aborted) return;
+      proofRef.current = { ...game, actions: [] };
+      actionTakenRef.current = false;
+      playedEvidenceIdsRef.current = [];
+      dispatchBattle({ type: 'start', deck: buildHand(demo, selectedEvidence, locale), selectedIds: selectedEvidence, enemyHp: maxEnemyHp, seed: game.seed, requireAllEvidence: Boolean(demo.source) });
+      setPhase('court'); setTurnTimer(TURN_SECONDS); setVerdict(null);
+      setDebate([]); setScore(0);
+    } catch (error) {
+      if (!controller.signal.aborted) setError(error instanceof Error ? error.message : '开局失败，请重试');
+    } finally {
+      startingRef.current = false;
+      if (!controller.signal.aborted) setSubmitting(false);
+    }
   };
   const verifiedQuoteCount = demo.source?.verifiedQuoteCount || 0;
   const hasLiveQuotes = demo.source?.mode === 'zhihu-live' && verifiedQuoteCount > 0;
@@ -809,7 +786,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
   if (phase === 'ending' && verdict && demo.storyEnding) return <section className="campaign-shell campaign-run-shell story-ending-shell" aria-label={locale === 'en' ? 'Story conclusion' : '故事阶段结论'}>
     <div className="compact-run-nav"><button type="button" className="icon-back" onClick={onBack} aria-label={locale === 'en' ? 'Back to story' : '返回故事页'}>←</button><div className="phase-rail"><span className="done">1 {locale === 'en' ? 'Investigation' : '线索搜证'}</span><i>→</i><span className="done">2 {locale === 'en' ? 'Challenge' : '解释力对决'}</span><i>→</i><span className="active">3 END</span></div></div>
     {demo.source && <div className="story-source-strip"><strong>{demo.source.provider}《{demo.source.title}》</strong><span>{locale === 'en' ? 'Author' : '作者'}：{demo.source.author} · Work ID {demo.source.workId}</span><small>{demo.source.notice}</small></div>}
-    <StoryEndingPanel demo={visibleDemo} verdict={verdict} selectedEvidence={selectedEvidence} onRetry={returnToInvestigation} onFinish={() => { onComplete(verdict.score); onBack(); }} />
+    <StoryEndingPanel demo={visibleDemo} verdict={verdict} selectedEvidence={selectedEvidence} onRetry={returnToInvestigation} onFinish={onBack} />
     {demo.source && <KanshanGuideDock locale={locale} phase="ending" selectedCount={selectedEvidence.length} battleResult={battleResult} sourceMode={demo.source.mode} />}
   </section>;
   return <section className="campaign-shell campaign-run-shell" aria-label={copy.navCampaign}>
@@ -818,7 +795,7 @@ function CampaignRun({ demo, apiBaseUrl, onBack, onComplete, onNext }: { demo: D
     <small className="campaign-focus-line">{copy.campaignFocusLabel}{locale === 'en' ? ': ' : '：'}{visibleDemo.focus.join(' · ')}</small>
     {demo.source && <div className="story-source-strip"><strong>{demo.source.provider}《{demo.source.title}》</strong><span>作者：{demo.source.author} · Work ID {demo.source.workId}</span><small>{demo.source.notice}</small></div>}
     {phase === 'investigate' && error && <p className="error-message" role="alert">{error}</p>}
-    {phase === 'court' ? <CourtArena demo={visibleDemo} onNext={onNext} onInvestigate={returnToInvestigation} hand={courtHand} cardsPlayed={cardsPlayed} battleStage={battle.stage} battleResult={battleResult} playerStamina={playerStamina} playerShield={playerShield} enemyHp={enemyHp} maxEnemyHp={maxEnemyHp} playerHp={playerHp} turn={turn} turnTimer={turnTimer} debate={debate} submitting={submitting} verdict={verdict} error={error} onPlayCard={playCard} onRequestVerdict={requestVerdict} courtEffect={courtEffect} /> : <div className="campaign-layout investigation-layout"><aside className="panel evidence-panel"><PanelHeading eyebrow="EVIDENCE HUB" title={demo.source ? (locale === 'en' ? 'Story scenes' : '故事现场') : copy.campaignSearchTitle} badge={demo.source ? (locale === 'en' ? '6 clues' : '6 条线索') : copy.campaignSearchBadge} /><div className="scene-tabs">{visibleDemo.scenes.map((scene) => <button type="button" className={scene.id === activeScene.id ? 'active' : ''} key={scene.id} onClick={() => setSceneId(scene.id)}>{scene.title}</button>)}</div><div className="scene-board"><span className="scene-label">{activeScene.title}</span><p>{activeScene.description}</p><div className="hotspot-grid">{activeScene.hotspots.map((spot) => <button type="button" className={`hotspot ${discovered.includes(spot.evidenceId) ? 'found' : ''}`} key={spot.id} onClick={() => discoverEvidence(spot.evidenceId, spot.title)}><EvidenceArtwork art={artworkFor(spot.id)} locale={locale} /><strong>{spot.title}</strong><small>{discovered.includes(spot.evidenceId) ? (locale === 'en' ? 'Collected ✓' : '已收集 ✓') : `${locale === 'en' ? 'Explore' : '自由调查'} · ${spot.hint}`}</small></button>)}</div></div><h3 className="subheading">{copy.campaignSearchLog}</h3><div className="investigation-log">{investigationLog.length ? investigationLog.map((item, index) => <span key={`${item}-${index}`}>{item}</span>) : <span>{copy.campaignInvestigateHint}</span>}</div></aside><div className="panel source-panel"><PanelHeading eyebrow="SOURCE READER" title={demo.source ? storyReaderTitle : copy.campaignSourceReader} badge={demo.source ? storyReaderBadge : copy.campaignSourceBadge} /><div className="source-documents"><h3 className="subheading">{demo.source ? (locale === 'en' ? 'Case clues' : '案卷线索') : copy.campaignSourceTitle}</h3><div className="document-list">{visibleDemo.documents.map((doc) => { const rawDocument = demo.documents.find((item) => item.id === doc.id); const verifiedAnchor = demo.source?.mode === 'zhihu-live' && rawDocument?.content.includes('【知乎公开片段 · 原文短引】'); return <button type="button" className={`document-button ${doc.id === documentId ? 'active' : ''}`} key={doc.id} onClick={() => setDocumentId(documentId === doc.id ? '' : doc.id)}><EvidenceArtwork art={artworkFor(doc.id, doc.type)} locale={locale} /><strong>{doc.name}<small>{demo.source ? verifiedAnchor ? (locale === 'en' ? 'View verified quote →' : '查看已核验短引 →') : (locale === 'en' ? 'View curated note →' : '查看策划转述 →') : (locale === 'en' ? 'Open full original →' : '打开完整原件 →')}</small></strong></button>; })}</div></div><div className="source-reader"><CatDocument doc={activeDocument} playerSide={visibleDemo.playerSide} discovered={discovered} onDiscover={discoverEvidence} locale={locale} isStory={Boolean(demo.source)} sourceMode={demo.source?.mode} verifiedStoryQuote={Boolean(demo.source?.mode === 'zhihu-live' && demo.documents.find((item) => item.id === activeDocument.id)?.content.includes('【知乎公开片段 · 原文短引】'))} /></div></div><aside className="panel evidence-cards-panel"><PanelHeading eyebrow="CASEBOARD" title={demo.source ? (locale === 'en' ? 'Evidence hand' : '证据牌组') : copy.campaignEvidenceTitle} badge={interpolate(copy.campaignEvidenceBadge, { selected: selectedEvidence.length, total: HAND_SIZE })} /><div className="evidence-inventory">{discovered.length ? visibleDemo.evidence.filter((item) => discovered.includes(item.id)).map((item) => { const card = evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale); const picked = selectedEvidence.includes(item.id); const courtEligible = isCourtEligible(item.id); return <button type="button" className={`evidence-card ${picked ? 'selected' : ''} ${courtEligible ? '' : 'locked'}`} key={item.id} onClick={() => toggleEvidence(item.id)} aria-pressed={picked} disabled={!courtEligible}><div><strong>{item.title}</strong><span className="evidence-proof" title={item.proofPurpose}>→ {item.proofPurpose}</span></div><p>{item.description}</p><small>{card.nature} · {interpolate(copy.courtEvidenceAccuracy, { score: card.credibility })} · {card.key ? copy.courtEvidenceKey : courtEligible ? copy.courtEvidenceSupport : (locale === 'en' ? 'Background clue' : '背景线索')} · {picked ? (locale === 'en' ? '✓ Selected · click to remove' : '✓ 已选入庭 · 点击取消选择') : courtEligible ? (locale === 'en' ? 'Click to select for trial' : '点击选择带上庭') : (locale === 'en' ? 'Not a hypothesis card' : '不作为方向牌')}</small></button>; }) : <EmptyState text={copy.campaignInvestigateHint} />}</div><div className="court-entry"><p className="chain-tip">{demo.source ? (locale === 'en' ? 'Bring all three key anchors and one evidence card that represents your hypothesis.' : '携带 3 张关键锚点，再选 1 张代表你的推理方向。') : interpolate(copy.campaignCourtEntryHint, { total: HAND_SIZE })}</p><button type="button" className="button primary enter-court" onClick={enterCourt} disabled={!selectedEvidence.length}>{selectedEvidence.length ? (demo.source ? (locale === 'en' ? `Enter challenge with ${selectedEvidence.length}/4 cards →` : `带 ${selectedEvidence.length}/4 张牌进入质证 →`) : interpolate(copy.campaignEnterCourt, { count: selectedEvidence.length })) : copy.campaignChooseEvidence}</button></div></aside></div>}
+    {phase === 'court' ? <CourtArena demo={visibleDemo} onNext={onNext} onInvestigate={returnToInvestigation} hand={courtHand} cardsPlayed={cardsPlayed} battleStage={battle.stage} battleResult={battleResult} playerStamina={playerStamina} playerShield={playerShield} enemyHp={enemyHp} maxEnemyHp={maxEnemyHp} playerHp={playerHp} turn={turn} turnTimer={turnTimer} debate={debate} submitting={submitting} verdict={verdict} error={error} onPlayCard={playCard} onRequestVerdict={requestVerdict} courtEffect={courtEffect} /> : <div className="campaign-layout investigation-layout"><aside className="panel evidence-panel"><PanelHeading eyebrow="EVIDENCE HUB" title={demo.source ? (locale === 'en' ? 'Story scenes' : '故事现场') : copy.campaignSearchTitle} badge={demo.source ? (locale === 'en' ? '6 clues' : '6 条线索') : copy.campaignSearchBadge} /><div className="scene-tabs">{visibleDemo.scenes.map((scene) => <button type="button" className={scene.id === activeScene.id ? 'active' : ''} key={scene.id} onClick={() => setSceneId(scene.id)}>{scene.title}</button>)}</div><div className="scene-board"><span className="scene-label">{activeScene.title}</span><p>{activeScene.description}</p><div className="hotspot-grid">{activeScene.hotspots.map((spot) => <button type="button" className={`hotspot ${discovered.includes(spot.evidenceId) ? 'found' : ''}`} key={spot.id} onClick={() => discoverEvidence(spot.evidenceId, spot.title)}><EvidenceArtwork art={artworkFor(spot.id)} locale={locale} /><strong>{spot.title}</strong><small>{discovered.includes(spot.evidenceId) ? (locale === 'en' ? 'Collected ✓' : '已收集 ✓') : `${locale === 'en' ? 'Explore' : '自由调查'} · ${spot.hint}`}</small></button>)}</div></div><h3 className="subheading">{copy.campaignSearchLog}</h3><div className="investigation-log">{investigationLog.length ? investigationLog.map((item, index) => <span key={`${item}-${index}`}>{item}</span>) : <span>{copy.campaignInvestigateHint}</span>}</div></aside><div className="panel source-panel"><PanelHeading eyebrow="SOURCE READER" title={demo.source ? storyReaderTitle : copy.campaignSourceReader} badge={demo.source ? storyReaderBadge : copy.campaignSourceBadge} /><div className="source-documents"><h3 className="subheading">{demo.source ? (locale === 'en' ? 'Case clues' : '案卷线索') : copy.campaignSourceTitle}</h3><div className="document-list">{visibleDemo.documents.map((doc) => { const rawDocument = demo.documents.find((item) => item.id === doc.id); const verifiedAnchor = demo.source?.mode === 'zhihu-live' && rawDocument?.content.includes('【知乎公开片段 · 原文短引】'); return <button type="button" className={`document-button ${doc.id === documentId ? 'active' : ''}`} key={doc.id} onClick={() => setDocumentId(documentId === doc.id ? '' : doc.id)}><EvidenceArtwork art={artworkFor(doc.id, doc.type)} locale={locale} /><strong>{doc.name}<small>{demo.source ? verifiedAnchor ? (locale === 'en' ? 'View verified quote →' : '查看已核验短引 →') : (locale === 'en' ? 'View curated note →' : '查看策划转述 →') : (locale === 'en' ? 'Open full original →' : '打开完整原件 →')}</small></strong></button>; })}</div></div><div className="source-reader"><CatDocument doc={activeDocument} playerSide={visibleDemo.playerSide} discovered={discovered} onDiscover={discoverEvidence} locale={locale} isStory={Boolean(demo.source)} sourceMode={demo.source?.mode} verifiedStoryQuote={Boolean(demo.source?.mode === 'zhihu-live' && demo.documents.find((item) => item.id === activeDocument.id)?.content.includes('【知乎公开片段 · 原文短引】'))} /></div></div><aside className="panel evidence-cards-panel"><PanelHeading eyebrow="CASEBOARD" title={demo.source ? (locale === 'en' ? 'Evidence hand' : '证据牌组') : copy.campaignEvidenceTitle} badge={interpolate(copy.campaignEvidenceBadge, { selected: selectedEvidence.length, total: HAND_SIZE })} /><div className="evidence-inventory">{discovered.length ? visibleDemo.evidence.filter((item) => discovered.includes(item.id)).map((item) => { const card = evidenceCard(item, demo.keyEvidenceIds.includes(item.id), demo.levelId, locale); const picked = selectedEvidence.includes(item.id); const courtEligible = isCourtEligible(item.id); return <button type="button" className={`evidence-card ${picked ? 'selected' : ''} ${courtEligible ? '' : 'locked'}`} key={item.id} onClick={() => toggleEvidence(item.id)} aria-pressed={picked} disabled={!courtEligible}><div><strong>{item.title}</strong><span className="evidence-proof" title={item.proofPurpose}>→ {item.proofPurpose}</span></div><p>{item.description}</p><small>{card.nature} · {interpolate(copy.courtEvidenceAccuracy, { score: card.credibility })} · {card.key ? copy.courtEvidenceKey : courtEligible ? copy.courtEvidenceSupport : (locale === 'en' ? 'Background clue' : '背景线索')} · {picked ? (locale === 'en' ? '✓ Selected · click to remove' : '✓ 已选入庭 · 点击取消选择') : courtEligible ? (locale === 'en' ? 'Click to select for trial' : '点击选择带上庭') : (locale === 'en' ? 'Not a hypothesis card' : '不作为方向牌')}</small></button>; }) : <EmptyState text={copy.campaignInvestigateHint} />}</div><div className="court-entry"><p className="chain-tip">{demo.source ? (locale === 'en' ? 'Bring all three key anchors and one evidence card that represents your hypothesis.' : '携带 3 张关键锚点，再选 1 张代表你的推理方向。') : interpolate(copy.campaignCourtEntryHint, { total: HAND_SIZE })}</p><button type="button" className="button primary enter-court" onClick={enterCourt} disabled={!selectedEvidence.length || submitting}>{selectedEvidence.length ? (demo.source ? (locale === 'en' ? `Enter challenge with ${selectedEvidence.length}/4 cards →` : `带 ${selectedEvidence.length}/4 张牌进入质证 →`) : interpolate(copy.campaignEnterCourt, { count: selectedEvidence.length })) : copy.campaignChooseEvidence}</button></div></aside></div>}
     {demo.source && <KanshanGuideDock locale={locale} phase={phase} sceneId={sceneId} discoveredCount={discovered.length} selectedCount={selectedEvidence.length} battleResult={battleResult} sourceMode={demo.source.mode} />}
   </section>;
 }
@@ -967,14 +944,14 @@ function CourtArena({ demo, onNext, onInvestigate, hand, cardsPlayed, playerShie
   </div>;
 }
 
-function CommunitySection({ apiBaseUrl, posts, setPosts, loading }: { apiBaseUrl: string; posts: CommunityPost[]; setPosts: (posts: CommunityPost[]) => void; loading: boolean }) {
+function CommunitySection({ posts, setPosts, loading }: { posts: CommunityPost[]; setPosts: (posts: CommunityPost[]) => void; loading: boolean }) {
   const { locale } = useLocale(); const copy = APP_COPY[locale];
   const [submitting, setSubmitting] = useState(false); const [error, setError] = useState(''); const [liked, setLiked] = useState<string[]>([]);
   async function submitPost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSubmitting(true); setError('');
     const form = new FormData(event.currentTarget);
     if (!form.get('privacy')) { setError(copy.communityPrivacyError); setSubmitting(false); return; }
-    try { const post = await requestJson<CommunityPost>(`${apiBaseUrl}/api/community/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: form.get('title'), body: form.get('body'), tags: String(form.get('tags') || '').split(/\s+/).filter(Boolean), author: copy.communityAuthor }) }); setPosts([post, ...posts]); event.currentTarget.reset(); }
+    try { const post = await requestJson<CommunityPost>(`/api/community/posts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: form.get('title'), body: form.get('body'), tags: String(form.get('tags') || '').split(/\s+/).filter(Boolean), author: copy.communityAuthor }) }); setPosts([post, ...posts]); event.currentTarget.reset(); }
     catch (submitError) { setError(submitError instanceof Error ? submitError.message : copy.communityPublishError); }
     finally { setSubmitting(false); }
   }
@@ -1001,12 +978,12 @@ function ProfileModal({ profile, authenticated, onSave, onClose, onAuthRequest }
 
   return <div className="profile-overlay" role="presentation">
     <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
-      {profile && <button type="button" className="profile-close" onClick={onClose} aria-label={copy.profileClose}>×</button>}
+      <button type="button" className="profile-close" onClick={onClose} aria-label={copy.profileClose}>×</button>
       <div className="profile-hero"><img src="/assets/lawyer-cat-transparent.png" alt={copy.brandAlt} /><div><span className="eyebrow">ARGUS+ PLAYER FILE</span><h2 id="profile-title">{profile ? copy.profileTitleEdit : copy.profileTitleNew}</h2><p>{copy.profileDesc}</p></div></div>
       <form onSubmit={submit}>
         <label className="profile-name-field">{copy.profileNameLabel} <span>{authenticated ? copy.profileNameHelpAuthed : copy.profileNameHelpRequired}</span><input value={name} onChange={(event) => setName(event.target.value)} maxLength={20} readOnly={authenticated} autoFocus={!profile} placeholder={locale === 'en' ? 'e.g. EvidenceCat' : '例如：林墨'} /></label>
         <div className="avatar-picker"><div className="avatar-picker-heading"><strong>{copy.profileAvatarTitle}</strong><small>{copy.profileAvatarHint}</small></div><div className="avatar-options">{AVATARS.map((item) => <button type="button" key={item.id} className={`avatar-option ${avatar === item.src ? 'selected' : ''}`} onClick={() => setAvatar(item.src)} aria-label={locale === 'en' ? 'Cat avatar' : item.label} aria-pressed={avatar === item.src}><img src={item.src} alt="" /><span>{locale === 'en' ? 'Cat avatar' : item.label}</span></button>)}</div></div>
-        <p className="profile-privacy">{copy.profilePrivacy}</p>
+        <p className="profile-privacy">{isSupabaseConfigured ? copy.profilePrivacy : locale === 'en' ? 'Local practice only. This does not create an online account or upload scores.' : '当前为本地练习模式，不创建云端账号，也不会上传成绩。'}</p>
         {error && <p className="error-message" role="alert">{error}</p>}
         <div className="profile-actions"><button type="submit" className="button primary" disabled={saving}>{saving ? (locale === 'en' ? 'Saving…' : '正在保存…') : copy.profileSave}</button>{profile && <button type="button" className="button secondary" onClick={onClose}>{copy.profileLater}</button>}</div>
         {!authenticated && isSupabaseConfigured && <button type="button" className="profile-auth-link" onClick={onAuthRequest}>{copy.profileAuthLink}</button>}
@@ -1028,7 +1005,7 @@ function AuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (us
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const usernameValid = /^[\p{L}\p{N}_-]{2,20}$/u.test(normalizeUsername(username));
+  const usernameValid = /^[\p{L}\p{N}_-]{2,20}$/u.test(normalizeUsername(username)) && /^[\p{L}\p{N}_-]{2,20}$/u.test(normalizeUsername(username).toLowerCase());
 
   async function checkAvailability() {
     if (!usernameValid || !isSupabaseConfigured) return;
@@ -1043,7 +1020,7 @@ function AuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (us
     const cleanUsername = normalizeUsername(username);
     if (!isSupabaseConfigured) { setError(copy.authNotConfigured); return; }
     if (!usernameValid) { setError(copy.authUsernameInvalid); return; }
-    if (password.length < 6) { setError(copy.authPasswordShort); return; }
+    if (password.length < (mode === 'register' ? 8 : 6)) { setError(copy.authPasswordShort); return; }
     if (mode === 'register') {
       if (password !== confirmPassword) { setError(copy.authPasswordMismatch); return; }
       if (available === false) { setError(copy.authUsernameTaken); return; }
@@ -1089,8 +1066,8 @@ function AuthModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (us
       <div className="auth-tabs"><button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => { setMode('register'); setError(''); setMessage(''); }}>{copy.authRegister}</button><button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => { setMode('login'); setError(''); setMessage(''); }}>{copy.authLogin}</button></div>
       <form onSubmit={submit}>
         <label className="profile-name-field">{copy.authNameLabel} <span>{copy.authNameHelp}</span><div className="username-row"><input value={username} onChange={(event) => { setUsername(event.target.value); setAvailable(null); }} maxLength={20} autoFocus placeholder={locale === 'en' ? 'e.g. EvidenceCat' : '例如：证据收藏家'} /><button type="button" className="button secondary username-check" onClick={checkAvailability} disabled={!usernameValid || checking || mode === 'login'}>{checking ? copy.authUsernameChecking : mode === 'login' ? copy.authLogin : available === true ? copy.authUsernameAvailable : copy.authCheck}</button></div></label>
-        <label className="profile-name-field">{copy.authPasswordLabel} <span>{copy.authPasswordHelp}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} maxLength={72} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} placeholder={locale === 'en' ? 'Enter password' : '输入密码'} /></label>
-        {mode === 'register' && <label className="profile-name-field">{copy.authConfirmLabel} <span>{copy.authConfirmHelp}</span><input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={6} maxLength={72} autoComplete="new-password" placeholder={locale === 'en' ? 'Enter password again' : '再次输入密码'} /></label>}
+        <label className="profile-name-field">{copy.authPasswordLabel} <span>{copy.authPasswordHelp}</span><input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={mode === 'register' ? 8 : 6} maxLength={72} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} placeholder={locale === 'en' ? 'Enter password' : '输入密码'} /></label>
+        {mode === 'register' && <label className="profile-name-field">{copy.authConfirmLabel} <span>{copy.authConfirmHelp}</span><input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={mode === 'register' ? 8 : 6} maxLength={72} autoComplete="new-password" placeholder={locale === 'en' ? 'Enter password again' : '再次输入密码'} /></label>}
         {available === true && mode === 'register' && <p className="availability-ok">{locale === 'en' ? 'Username is available.' : '用户名可用，可以注册。'}</p>}
         {available === false && mode === 'register' && <p className="availability-taken">{copy.authUsernameTaken}</p>}
         {message && <p className="profile-status" role="status">{message}</p>}

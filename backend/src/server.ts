@@ -1,13 +1,22 @@
-const http = require('node:http');
-const { randomUUID } = require('node:crypto');
-const { URL } = require('node:url');
-const { getCampaignLevels, getCampaignCase, registerCampaignCase, demoCase, respondToDebate, buildVerdict } = require('./campaign');
-const { createZhihuContentClient } = require('./zhihu-content');
-const { buildBlueBloodCase, getStoryCase, listStoryChoices } = require('./zhihu-story');
+import http from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { pathToFileURL, URL } from 'node:url';
+import { createBattle, replayBattle, getCampaignLevels, getCampaignCase, registerCampaignCase, demoCase, respondToDebate, buildVerdict } from './campaign.ts';
+import { bearerToken, httpError, isUsernameAvailable, loadProfile, recordCampaignWin, requireSession, saveProfile, serviceRequest } from './auth.ts';
+import { isRecord } from './types.ts';
+import type { JsonObject, LawSource } from './types.ts';
+import { createZhihuContentClient } from './zhihu-content.ts';
+import type { ZhihuContentClient } from './zhihu-content.ts';
+import { buildBlueBloodCase, getStoryCase, listStoryChoices } from './zhihu-story.ts';
+
+export type ServerOptions = { corsOrigin?: string; zhihuClient?: ZhihuContentClient };
 
 const DEFAULT_PORT = 4000;
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
 const API_VERSION = '0.3.0';
+const requestWindows = new Map<string, { count: number; expiresAt: number }>();
+let lastWindowSweep = 0;
 
 const LAW_SOURCES = {
   civil509: {
@@ -42,7 +51,21 @@ const LAW_SOURCES = {
   },
 };
 
-const auditRules = [
+type LawSourceId = keyof typeof LAW_SOURCES;
+type AuditRule = {
+  id: string; skillId: string; skillName: string; name: string; severity: 'medium' | 'high';
+  necessity: number; pattern: RegExp; issue: string; direction: string; suggestedText: string;
+  lawSourceIds: LawSourceId[];
+};
+type AuditFinding = {
+  id: string; clauseIndex: number; clauseRange: { start: number; end: number }; clause: string;
+  category: string; severity: AuditRule['severity']; skill_id: string; skill_name: string; skill_version: string;
+  issue: string; direction: string; suggested_text: string; suggestion: string;
+  necessity: number; confidence: number; law_sources: (LawSource & { sourceId: LawSourceId })[];
+  lawSourceIds: LawSourceId[]; pending_questions: string[]; status: string;
+};
+
+const auditRules: AuditRule[] = [
   { id: 'scope', skillId: 'general-contract-v1', skillName: '通用合同审查', name: '标的与范围', severity: 'medium', necessity: 8, pattern: /标的|服务内容|货物|产品|商铺|房屋|面积|位置|用途/, issue: '合同标的、范围、数量、质量或用途描述不够可核验，可能导致履行边界争议。', direction: '以附件、清单或图纸明确标的、规格、面积、用途及交付状态，并确定文件冲突时的适用顺序。', suggestedText: '合同标的及履行范围以双方确认的附件清单为准；附件应载明名称、规格、数量、位置、现状及允许用途。', lawSourceIds: ['civil509'] },
   { id: 'deadline', skillId: 'general-contract-v1', skillName: '通用合同审查', name: '期限与节点', severity: 'high', necessity: 9, pattern: /及时|尽快|另行协商|届时|期限|工作日|完成/, issue: '履行期限主观且不可直接核验，容易引发迟延履行争议。关键事项留待后续确定，合同履行条件尚未闭合。', direction: '改为明确日期、工作日数量及期限起算点；增加确认方式、反馈期限以及协商不成时的处理机制。', suggestedText: '相关事项应于明确日期或触发事件发生之日起___个工作日内完成；一方应以书面方式确认，另一方应在收到后___个工作日内反馈。', lawSourceIds: ['civil509'] },
   { id: 'payment', skillId: 'general-contract-v1', skillName: '通用合同审查', name: '价款、支付与发票', severity: 'high', necessity: 9, pattern: /价款|租金|费用|支付|付款|收款|发票|账户/, issue: '价款构成、支付条件、结算周期或发票安排不完整，可能造成额外收费、付款条件失衡或税务风险。', direction: '明确含税总价、费用边界、付款节点、验收与开票先后关系、账户变更验证以及逾期责任。', suggestedText: '合同含税总价为人民币___元，已包含履约所需全部费用。付款以约定条件完成并收到合法有效发票为前提；收款账户变更须经书面通知及复核。', lawSourceIds: ['civil509'] },
@@ -53,7 +76,7 @@ const auditRules = [
   { id: 'data', skillId: 'data-compliance-v1', skillName: '数据合规与个人信息 Skill', name: '知识产权、保密与数据', severity: 'high', necessity: 9, pattern: /知识产权|著作权|商标|保密|秘密|个人信息|数据|隐私|监控/, issue: '成果归属、授权边界、保密例外或个人信息处理规则不清，可能引发侵权、泄密和数据合规风险。', direction: '区分既有成果与新成果；明确许可主体、地域、期限和场景；个人信息按最小必要处理并约定安全事件通知。', suggestedText: '各方既有知识产权仍归原权利人所有。处理个人信息应限于履约必要范围，发生安全事件应立即通知并采取补救措施。', lawSourceIds: ['civil509'] },
 ];
 
-function splitClausesDetailed(text) {
+function splitClausesDetailed(text: string) {
   const clauses = [];
   const matcher = /[^\n。；！？]+(?:[。；！？]|$)/g;
   let match;
@@ -66,11 +89,11 @@ function splitClausesDetailed(text) {
   return clauses;
 }
 
-function splitClauses(text) {
+export function splitClauses(text: string) {
   return splitClausesDetailed(text).map(({ clause }) => clause);
 }
 
-function inferCaseType(text) {
+export function inferCaseType(text: string) {
   if (/退货|网购|消费者/.test(text)) return '网络消费合同纠纷';
   if (/加班|工资|劳动/.test(text)) return '劳动争议';
   if (/租赁|押金|房东|退租/.test(text)) return '房屋租赁合同纠纷';
@@ -78,16 +101,14 @@ function inferCaseType(text) {
   return '合同纠纷';
 }
 
-function extractAmount(text) {
+function extractAmount(text: string) {
   return (text.match(/(?:人民币)?\s*\d[\d,]*(?:\.\d+)?\s*(?:元|万元)/) || [])[0] || '金额待核验';
 }
 
-function buildCaseDraft(input) {
+export function buildCaseDraft(input: JsonObject) {
   const concept = String(input.concept || '').trim();
   if (!concept) {
-    const error = new Error('concept 不能为空');
-    error.statusCode = 400;
-    throw error;
+    throw httpError(400, 'concept 不能为空');
   }
   const caseType = inferCaseType(concept);
   const amount = extractAmount(concept);
@@ -102,18 +123,16 @@ function buildCaseDraft(input) {
   };
 }
 
-function auditContract(input) {
+export function auditContract(input: JsonObject) {
   const text = String(input.text || '').trim();
   if (!text) {
-    const error = new Error('text 不能为空');
-    error.statusCode = 400;
-    throw error;
+    throw httpError(400, 'text 不能为空');
   }
   const clauses = splitClausesDetailed(text);
   const contractType = String(input.contractType || (/租赁|押金|房东|退租/.test(text) ? '房屋租赁合同' : '通用合同'));
   const position = String(input.position || '其他');
   const enabledRules = contractType.includes('租赁') ? auditRules : auditRules.filter((rule) => rule.id !== 'deposit');
-  const findings = [];
+  const findings: AuditFinding[] = [];
   clauses.forEach((item, clauseIndex) => {
     enabledRules.forEach((rule) => {
       if (!rule.pattern.test(item.clause)) return;
@@ -143,52 +162,115 @@ const communityPosts = [
 ];
 
 
-function resolveCorsOrigin(requestOrigin, configuredOrigin) {
+function resolveCorsOrigin(requestOrigin: string | undefined, configuredOrigin: string): string {
   const allowedOrigins = String(configuredOrigin || '*').split(',').map((origin) => origin.trim()).filter(Boolean);
-  if (!allowedOrigins.length || allowedOrigins.includes('*')) return '*';
+  if (!allowedOrigins.length || allowedOrigins.includes('*')) return requestOrigin || '*';
   if (requestOrigin && allowedOrigins.includes(requestOrigin)) return requestOrigin;
-  return allowedOrigins[0];
+  return requestOrigin ? '' : allowedOrigins[0];
 }
 
-function json(res, statusCode, payload, corsOrigin) {
-  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': corsOrigin, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', Vary: 'Origin' });
+function assertRequestOrigin(req: IncomingMessage, configuredOrigin: string): void {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  const allowed = String(configuredOrigin || '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (!allowed.includes('*') && !allowed.includes(origin)) throw httpError(403, '请求来源不被允许');
+}
+
+function limitRequests(req: IncomingMessage, bucket: string, max = 120): void {
+  const key = `${bucket}:${req.socket.remoteAddress || 'unknown'}`;
+  const now = Date.now();
+  if (now - lastWindowSweep >= 60_000) {
+    for (const [entry, value] of requestWindows) if (value.expiresAt <= now) requestWindows.delete(entry);
+    lastWindowSweep = now;
+  }
+  const previous = requestWindows.get(key);
+  const current = previous && previous.expiresAt > now ? previous : { count: 0, expiresAt: now + 60_000 };
+  if (current.count >= max || (!requestWindows.has(key) && requestWindows.size >= 10_000)) throw httpError(429, '请求过于频繁，请稍后再试');
+  current.count += 1;
+  requestWindows.set(key, current);
+}
+
+function ensureStringSize(value: unknown, name: string, max: number): void {
+  if (String(value || '').length > max) throw httpError(400, `${name} 过长`);
+}
+
+function json(res: ServerResponse, statusCode: number, payload: unknown, corsOrigin: string): void {
+  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8', ...(corsOrigin ? { 'Access-Control-Allow-Origin': corsOrigin } : {}), 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type,Authorization', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', Vary: 'Origin' });
   if (statusCode === 204) { res.end(); return; }
   res.end(JSON.stringify(payload));
 }
 
-async function readJson(req) {
-  const chunks = [];
+async function readJson(req: IncomingMessage): Promise<JsonObject> {
+  const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) { const error = new Error('请求体超过 3MB'); error.statusCode = 413; throw error; }
+    if (size > MAX_BODY_BYTES) throw httpError(413, '请求体超过 3MB');
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { const error = new Error('请求体必须是有效 JSON'); error.statusCode = 400; throw error; }
+  try {
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (!isRecord(body)) throw new Error();
+    return body;
+  } catch { throw httpError(400, '请求体必须是有效 JSON 对象'); }
 }
 
-function createRequestHandler(options = {}) {
+export function createRequestHandler(options: ServerOptions = {}) {
   const configuredCorsOrigin = options.corsOrigin || process.env.CORS_ORIGIN || 'http://localhost:3000';
   const zhihuClient = options.zhihuClient || createZhihuContentClient();
   // Every process can handle follow-up debate requests even if another instance served the case detail.
   registerCampaignCase(buildBlueBloodCase({}, 'curated-fallback'));
-  return async function requestHandler(req, res) {
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  return async function requestHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const corsOrigin = resolveCorsOrigin(req.headers.origin, configuredCorsOrigin);
-    if (req.method === 'OPTIONS') { json(res, 204, {}, corsOrigin); return; }
     try {
+      let url;
+      try { url = new URL(req.url || '/', 'http://localhost'); } catch { throw httpError(400, '请求地址无效'); }
+      assertRequestOrigin(req, configuredCorsOrigin);
+      if (req.method === 'OPTIONS') { json(res, 204, {}, corsOrigin); return; }
+      if (url.pathname.startsWith('/api/')) limitRequests(req, 'api', 600);
       if (req.method === 'GET' && url.pathname === '/health') { json(res, 200, { status: 'ok', service: 'argus-backend', runtime: 'node', version: API_VERSION, timestamp: new Date().toISOString() }, corsOrigin); return; }
-      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/zhihu/stories', 'GET /api/zhihu/stories/:id/case', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/cases/draft') { json(res, 201, { data: buildCaseDraft(await readJson(req)) }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/contracts/audit') { json(res, 200, { data: auditContract(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'GET' && url.pathname === '/api') { json(res, 200, { name: 'ARGUS+ API', version: API_VERSION, endpoints: ['GET /health', 'GET /api/auth/username-available', 'GET /api/profile', 'PUT /api/profile', 'POST /api/campaign/battles', 'POST /api/campaign/runs', 'GET /api/leaderboard', 'POST /api/cases/draft', 'POST /api/contracts/audit', 'GET /api/campaign/levels', 'GET /api/campaign/cases/:id', 'GET /api/campaign/demo', 'POST /api/campaign/respond', 'POST /api/campaign/verdict', 'GET /api/zhihu/stories', 'GET /api/zhihu/stories/:id/case', 'GET /api/community/feed', 'POST /api/community/posts'] }, corsOrigin); return; }
+      if (req.method === 'GET' && url.pathname === '/api/auth/username-available') { limitRequests(req, 'username', 30); json(res, 200, { data: { available: await isUsernameAvailable(url.searchParams.get('username')) } }, corsOrigin); return; }
+      if ((req.method === 'GET' || req.method === 'PUT') && url.pathname === '/api/profile') {
+        const session = await requireSession(req);
+        if (req.method === 'GET') {
+          const profile = await loadProfile(session);
+          json(res, 200, { data: profile }, corsOrigin); return;
+        }
+        const body = await readJson(req);
+        const saved = await saveProfile(session, { avatar: body.avatar });
+        json(res, 200, { data: saved }, corsOrigin); return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/battles') {
+        limitRequests(req, 'battle-start', 30);
+        const session = bearerToken(req) ? await requireSession(req) : null;
+        json(res, 201, { data: createBattle(await readJson(req), session?.profileId || null) }, corsOrigin); return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/runs') {
+        const session = await requireSession(req);
+        const body = await readJson(req);
+        const verdict = replayBattle(body, session.profileId);
+        if (verdict.gameResult !== 'player_win') throw httpError(400, '只有获胜对局可以计分');
+        const score = verdict.score;
+        const saved = await recordCampaignWin(session, verdict.levelId, score);
+        json(res, 201, { data: { score, verdict, profile: saved } }, corsOrigin); return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/leaderboard') {
+        const requested = Number(url.searchParams.get('limit') || 8);
+        const limit = Number.isFinite(requested) ? Math.min(50, Math.max(1, Math.floor(requested))) : 8;
+        const rows = await serviceRequest(`/rest/v1/leaderboard?select=id,name,avatar,total_score,completed_levels&order=total_score.desc,completed_levels.desc&limit=${limit}`);
+        json(res, 200, { data: rows }, corsOrigin); return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/cases/draft') { limitRequests(req, 'case'); const body = await readJson(req); ensureStringSize(body.concept, 'concept', 5000); json(res, 201, { data: buildCaseDraft(body) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/contracts/audit') { limitRequests(req, 'audit'); const body = await readJson(req); ensureStringSize(body.text, 'text', 200000); json(res, 200, { data: auditContract(body) }, corsOrigin); return; }
       if (req.method === 'GET' && url.pathname === '/api/zhihu/stories') {
-        res.setHeader('Cache-Control', 'no-store');
+        limitRequests(req, 'zhihu', 120);
         json(res, 200, { data: await listStoryChoices(zhihuClient) }, corsOrigin); return;
       }
       const storyCaseRoute = url.pathname.match(/^\/api\/zhihu\/stories\/([^/]+)\/case$/);
       if (req.method === 'GET' && storyCaseRoute) {
-        res.setHeader('Cache-Control', 'no-store');
+        limitRequests(req, 'zhihu', 120);
         const caseData = await getStoryCase(storyCaseRoute[1], zhihuClient);
         json(res, 200, { data: registerCampaignCase(caseData) }, corsOrigin); return;
       }
@@ -200,32 +282,42 @@ function createRequestHandler(options = {}) {
         json(res, 200, { data: caseData }, corsOrigin); return;
       }
       if (req.method === 'GET' && url.pathname === '/api/campaign/demo') { json(res, 200, { data: getCampaignCase() }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/respond') { json(res, 200, { data: respondToDebate(await readJson(req)) }, corsOrigin); return; }
-      if (req.method === 'POST' && url.pathname === '/api/campaign/verdict') { json(res, 200, { data: buildVerdict(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/respond') { limitRequests(req, 'campaign'); json(res, 200, { data: respondToDebate(await readJson(req)) }, corsOrigin); return; }
+      if (req.method === 'POST' && url.pathname === '/api/campaign/verdict') { limitRequests(req, 'verdict'); json(res, 200, { data: replayBattle(await readJson(req)) }, corsOrigin); return; }
       if (req.method === 'GET' && url.pathname === '/api/community/feed') { json(res, 200, { data: { posts: communityPosts } }, corsOrigin); return; }
       if (req.method === 'POST' && url.pathname === '/api/community/posts') {
         const body = await readJson(req);
         const title = String(body.title || '').trim();
         const postBody = String(body.body || '').trim();
-        if (!title || !postBody) { const error = new Error('title 和 body 不能为空'); error.statusCode = 400; throw error; }
-        const post = { id: randomUUID(), author: String(body.author || '匿名律师猫'), time: '刚刚', title, body: postBody, tags: Array.isArray(body.tags) ? body.tags.slice(0, 5) : ['#新分享'], likes: 0, comments: 0 };
-        communityPosts.unshift(post); json(res, 201, { data: post }, corsOrigin); return;
+        ensureStringSize(title, 'title', 200); ensureStringSize(postBody, 'body', 5000);
+        if (!title || !postBody) throw httpError(400, 'title 和 body 不能为空');
+        const session = await requireSession(req);
+        limitRequests(req, 'community', 10);
+        const profile = await loadProfile(session);
+        const post = { id: randomUUID(), author: profile.name, time: '刚刚', title, body: postBody, tags: Array.isArray(body.tags) ? body.tags.filter((tag: unknown): tag is string => typeof tag === 'string' && tag.length <= 30).slice(0, 5) : ['#新分享'], likes: 0, comments: 0 };
+        communityPosts.unshift(post); communityPosts.length = Math.min(communityPosts.length, 200);
+        json(res, 201, { data: post }, corsOrigin); return;
       }
       json(res, 404, { error: { message: '路由不存在' } }, corsOrigin);
     } catch (error) {
-      const statusCode = Number(error.statusCode) || 500;
-      json(res, statusCode, { error: { message: statusCode === 500 ? '服务器内部错误' : error.message } }, corsOrigin);
+      if (!req.complete) req.resume();
+      const statusCode = error instanceof Error && 'statusCode' in error ? Number(error.statusCode) || 500 : 500;
+      const message = statusCode === 500 || !(error instanceof Error) ? '服务器内部错误' : error.message;
+      json(res, statusCode, { error: { message } }, corsOrigin);
     }
   };
 }
 
-function createServer(options = {}) { return http.createServer(createRequestHandler(options)); }
+export function createServer(options: ServerOptions = {}) {
+  return http.createServer({ requestTimeout: 30_000, headersTimeout: 15_000, maxHeaderSize: 16_384 }, createRequestHandler(options));
+}
 
-if (require.main === module) {
+// Works both under Node's native TypeScript execution and in the compiled ESM build.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.PORT) || DEFAULT_PORT;
   const host = process.env.HOST || '0.0.0.0';
   const server = createServer();
   server.listen(port, host, () => console.log(`ARGUS+ backend listening on http://${host}:${port}`));
 }
 
-module.exports = { auditContract, buildCaseDraft, buildVerdict, createRequestHandler, createServer, demoCase, inferCaseType, respondToDebate, splitClauses };
+export { buildVerdict, demoCase, respondToDebate };

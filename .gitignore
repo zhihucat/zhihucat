@@ -1,6 +1,7 @@
 node_modules/
 .next/
 out/
+backend/dist/
 *.tsbuildinfo
 .env
 .env.local
